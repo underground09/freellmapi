@@ -10,6 +10,7 @@ import { runImageGeneration, runVideoGeneration, runSpeech, runTranscription, Me
 import multer from 'multer';
 import { getDb } from '../db/index.js';
 import { resolveAuth, prependSystemPrompt, type ResolvedAuth } from '../lib/system-prompt.js';
+import { enforceProfileChain } from '../lib/chain-scope.js';
 import { contentToString, messageHasImage, normalizeOutboundContent, sanitizeResponse, truncateMessagesForGithub } from '../lib/content.js';
 import { resolveTaskType } from '../lib/task-type.js';
 import { normalizeMessageImages } from '../lib/image-normalize.js';
@@ -66,6 +67,10 @@ function requireInferenceAuth(req: Request, res: Response): ResolvedAuth | null 
     res.status(401).json({ error: { message: 'Invalid API key', type: 'authentication_error' } });
     return null;
   }
+  // Nivel 2: una clave de cliente atada a una cadena no puede pedir modelos
+  // de otra. Se aplica aquí, en la única puerta de /v1, para que valga igual
+  // en chat, embeddings, audio y el resto de endpoints de inferencia.
+  if (!enforceProfileChain(auth, req, res)) return null;
   return auth;
 }
 

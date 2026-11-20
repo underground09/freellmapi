@@ -38,13 +38,14 @@ export function hashClientProfileKey(key: string): string {
 
 export type ResolvedAuth =
   | { kind: 'unified'; systemPrompt: null }
-  | { kind: 'profile'; profileId: number; name: string; systemPrompt: string | null };
+  | { kind: 'profile'; profileId: number; name: string; systemPrompt: string | null; chainId: number | null };
 
 interface ProfileRow {
   id: number;
   name: string;
   system_prompt: string | null;
   enabled: number;
+  chain_id: number | null;
 }
 
 /**
@@ -60,13 +61,13 @@ export function resolveAuth(token: string | undefined): ResolvedAuth | null {
   }
   if (!token.startsWith(CLIENT_PROFILE_KEY_PREFIX)) return null;
   const row = getDb().prepare(
-    'SELECT id, name, system_prompt, enabled FROM client_profiles WHERE token_hash = ?',
+    'SELECT id, name, system_prompt, enabled, chain_id FROM client_profiles WHERE token_hash = ?',
   ).get(hashClientProfileKey(token)) as ProfileRow | undefined;
   if (!row || !row.enabled) return null;
   const prompt = row.system_prompt != null && row.system_prompt.trim().length > 0
     ? row.system_prompt
     : null;
-  return { kind: 'profile', profileId: row.id, name: row.name, systemPrompt: prompt };
+  return { kind: 'profile', profileId: row.id, name: row.name, systemPrompt: prompt, chainId: row.chain_id ?? null };
 }
 
 /**
