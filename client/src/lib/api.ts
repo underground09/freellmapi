@@ -10,7 +10,11 @@ export function getBasePath(): string {
   // so /api/* never escapes to the domain root where the panel session is not
   // visible to the gateway.
   const path = window.location.pathname.replace(/\/+$/, '')
-  if (/\/admin\/herramientas\/gateway\/freellmapi$/.test(path)) return path
+  // Coincidencia por PREFIJO, no por final: el SPA navega a sub-rutas
+  // (/entorno-de-pruebas, /claves…) y con el ancla $ la detección fallaba y las
+  // peticiones salían a la raíz del dominio (Laravel → 404).
+  const match = path.match(/^(.*\/admin\/herramientas\/gateway\/freellmapi)(?:\/|$)/)
+  if (match) return match[1]
   return import.meta.env.BASE_URL.replace(/\/+$/, '')
 }
 
