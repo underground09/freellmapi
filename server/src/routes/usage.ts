@@ -83,7 +83,7 @@ usageRouter.get('/by-model', (req: Request, res: Response) => {
   `).all(...params) as UsageRow[];
 
   const modelLimits = db.prepare(
-    "SELECT rpd_limit AS rpd, rpm_limit AS rpm FROM models WHERE platform = ? AND model_id = ? ORDER BY (endpoint_scope = '') DESC LIMIT 1",
+    "SELECT rpd_limit AS rpd, rpm_limit AS rpm, released_at FROM models WHERE platform = ? AND model_id = ? ORDER BY (endpoint_scope = '') DESC LIMIT 1",
   );
   // Cuota POR MODELO primero (quota_pool_key = '<platform>::<model_id>'); si no hay,
   // se usa la de la plataforma. Así argon (semanal) no contamina a los demás.
@@ -138,6 +138,7 @@ usageRouter.get('/by-model', (req: Request, res: Response) => {
       lastUsedAt: row.last_at ? new Date(row.last_at).toISOString() : null,
       status: thresholds(pct),
       limitSource: quota?.limit_value != null ? 'provider_quota_state' : (catalogLimit != null ? 'catalog' : null),
+      releasedAt: (model as { released_at?: string | null } | undefined)?.released_at ?? null,
     };
   });
 
@@ -147,14 +148,14 @@ usageRouter.get('/by-model', (req: Request, res: Response) => {
     const conCuota = db
       .prepare(
         `SELECT m.model_id AS model, q.key_id AS keyId, q.remaining_value AS remaining,
-                q.reset_at AS resetAt, q.reset_strategy AS strat
+                q.reset_at AS resetAt, q.reset_strategy AS strat, m.released_at AS releasedAt
            FROM models m
            JOIN provider_quota_state q
              ON q.quota_pool_key = m.platform || '::' || m.model_id
           WHERE m.platform = 'antigravity' AND m.enabled = 1
           GROUP BY m.model_id`,
       )
-      .all() as Array<{ model: string; keyId: number; remaining: number | null; resetAt: string | null; strat: string | null }>;
+      .all() as Array<{ model: string; keyId: number; remaining: number | null; resetAt: string | null; strat: string | null; releasedAt: string | null }>;
 
     for (const c of conCuota) {
       if (items.some((i) => i.model === c.model)) continue;
@@ -175,6 +176,7 @@ usageRouter.get('/by-model', (req: Request, res: Response) => {
         lastUsedAt: null,
         status: thresholds(pct),
         limitSource: 'provider_quota_state',
+        releasedAt: c.releasedAt,
       } as (typeof items)[number]);
     }
   }
