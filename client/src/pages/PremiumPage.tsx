@@ -56,6 +56,7 @@ interface UsageItem {
   remaining: number | null
   pct: number | null
   resetAt: string | null
+  scope?: string | null
   lastUsedAt: string | null
   status: UsageStatus
   limitSource: string | null
@@ -546,6 +547,16 @@ export default function PremiumPage() {
                           item.status === 'red' ? 'bg-rose-400' : item.status === 'amber' ? 'bg-amber-300' : 'bg-emerald-400'
                         }`} />
                         {item.pct}%
+                        {item.scope ? (
+                          <span
+                            title={item.scope === 'S' ? 'Cuota semanal' : 'Cuota diaria'}
+                            className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                              item.scope === 'S' ? 'bg-sky-500/20 text-sky-300' : 'bg-teal-500/20 text-teal-300'
+                            }`}
+                          >
+                            {item.scope}
+                          </span>
+                        ) : null}
                       </span>
                     )}
                   </td>
