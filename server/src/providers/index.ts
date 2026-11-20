@@ -53,7 +53,11 @@ register(new GoogleProvider({
   cloudCode: true,
   cloudCodeBaseUrl: 'https://daily-cloudcode-pa.googleapis.com/v1internal',
   cloudCodeHeaders: {
-    'User-Agent': 'antigravity/ide/2.1.1 darwin/arm64',
+    // El path de STREAMING (SSE) rechaza el cliente viejo: con 2.1.1 Google
+    // devuelve SOLO el cartel «This version of Antigravity is no longer
+    // supported» (200, 319 bytes). Con 3.5.0+ responde de verdad (medido:
+    // 2.1.1=cartel, 3.5.0/4.2.0/5.0.0=respuesta real).
+    'User-Agent': process.env.ANTIGRAVITY_UA ?? 'antigravity/ide/4.2.0 darwin/arm64',
     'x-request-source': 'local',
   },
   timeoutMs: 180_000,
