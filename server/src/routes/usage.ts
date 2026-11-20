@@ -85,22 +85,42 @@ usageRouter.get('/by-model', (req: Request, res: Response) => {
   const modelLimits = db.prepare(
     "SELECT rpd_limit AS rpd, rpm_limit AS rpm FROM models WHERE platform = ? AND model_id = ? ORDER BY (endpoint_scope = '') DESC LIMIT 1",
   );
+  // Cuota POR MODELO primero (quota_pool_key = '<platform>::<model_id>'); si no hay,
+  // se usa la de la plataforma. Así argon (semanal) no contamina a los demás.
   const quotaState = db.prepare(`
-    SELECT limit_value, remaining_value, reset_at, metric
+    SELECT limit_value, remaining_value, reset_at, metric, reset_strategy
       FROM provider_quota_state
      WHERE platform = ? AND key_id = ? AND limit_value IS NOT NULL
-     ORDER BY CASE metric WHEN 'requests' THEN 0 WHEN 'rpm' THEN 1 ELSE 2 END, updated_at DESC
+       AND (quota_pool_key = ? OR quota_pool_key NOT LIKE '%::%')
+     ORDER BY CASE WHEN quota_pool_key = ? THEN 0 ELSE 1 END,
+              CASE metric WHEN 'requests' THEN 0 WHEN 'rpm' THEN 1 ELSE 2 END,
+              updated_at DESC
      LIMIT 1
   `);
 
   const items = rows.map(row => {
     const model = modelLimits.get(row.platform, row.model_id) as ModelLimits | undefined;
-    const quota = quotaState.get(row.platform, row.key_id) as QuotaRow | undefined;
+    const poolKey = `${row.platform}::${row.model_id}`;
+    const quota = quotaState.get(row.platform, row.key_id, poolKey, poolKey) as QuotaRow | undefined;
 
+    const esPorcentaje = quota?.metric === 'percent';
     const catalogLimit = window === 'day' ? (model?.rpd ?? null) : null;
     const limit = quota?.limit_value ?? catalogLimit;
-    const used = row.requests;
-    const pct = limit && limit > 0 ? Math.min(999, Math.round((used / limit) * 1000) / 10) : null;
+    const used = esPorcentaje && quota?.remaining_value != null
+      ? Math.max(0, Math.round((100 - Number(quota.remaining_value)) * 10) / 10)
+      : row.requests;
+    const pct = esPorcentaje && quota?.remaining_value != null
+      ? Math.max(0, Math.round((100 - Number(quota.remaining_value)) * 10) / 10)
+      : (limit && limit > 0 ? Math.min(999, Math.round((used / limit) * 1000) / 10) : null);
+
+    // S = semanal, D = diario, según cuándo reinicia (o lo que declare el proveedor).
+    let scope: string | null = null;
+    if (quota?.reset_strategy === 'weekly') scope = 'S';
+    else if (quota?.reset_strategy === 'daily') scope = 'D';
+    else if (quota?.reset_at) {
+      const horas = (new Date(quota.reset_at).getTime() - Date.now()) / 3_600_000;
+      scope = horas > 30 ? 'S' : 'D';
+    }
 
     return {
       model: row.model_id,
@@ -113,6 +133,7 @@ usageRouter.get('/by-model', (req: Request, res: Response) => {
       remaining: quota?.remaining_value ?? null,
       pct,
       resetAt: quota?.reset_at ?? null,
+      scope,
       lastUsedAt: row.last_at ? new Date(row.last_at).toISOString() : null,
       status: thresholds(pct),
       limitSource: quota?.limit_value != null ? 'provider_quota_state' : (catalogLimit != null ? 'catalog' : null),
