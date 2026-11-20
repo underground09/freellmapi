@@ -39,6 +39,7 @@ import AudioPage from '@/pages/AudioPage'
 import MediaDetailPage from '@/pages/MediaDetailPage'
 import EmbeddingDetailPage from '@/pages/EmbeddingDetailPage'
 import AnalyticsPage from '@/pages/AnalyticsPage'
+import ConsumoPage from '@/pages/ConsumoPage'
 import LogsPage from '@/pages/LogsPage'
 import PremiumPage from '@/pages/PremiumPage'
 import NotFoundPage from '@/pages/NotFoundPage'
@@ -91,6 +92,7 @@ const modelItems = [
 const analyticsItems = [
   { to: '/analytics', labelKey: 'nav.analytics' },
   { to: '/logs', labelKey: 'nav.logs' },
+  { to: '/consumo', labelKey: 'nav.consumo' },
 ]
 
 // Nav entries rendered as a split control: the label still navigates, and a
@@ -109,7 +111,8 @@ const navMenus: Record<
   '/analytics': {
     ariaKey: 'nav.analyticsMenu',
     items: analyticsItems,
-    isActive: (pathname) => pathname.startsWith('/analytics') || pathname.startsWith('/logs'),
+    isActive: (pathname) =>
+      pathname.startsWith('/analytics') || pathname.startsWith('/logs') || pathname.startsWith('/consumo'),
   },
 }
 
@@ -472,6 +475,7 @@ function App() {
                       <Route path="/fallback" element={<Navigate to="/models/chat" replace />} />
                       <Route path="/analytics" element={<AnalyticsPage />} />
                       <Route path="/logs" element={<LogsPage />} />
+                      <Route path="/consumo" element={<ConsumoPage />} />
                       <Route path="/premium" element={<PremiumPage />} />
                       <Route path="/test" element={<Navigate to="/playground" replace />} />
                       <Route path="/health" element={<Navigate to="/keys" replace />} />
