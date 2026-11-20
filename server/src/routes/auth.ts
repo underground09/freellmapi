@@ -14,6 +14,7 @@ import {
   normalizeEmail,
 } from '../services/auth.js';
 import { setupCodeMatches, clearSetupCode } from '../lib/setup-code.js';
+import { ssoSession } from '../lib/sso.js';
 import { generateResetCode, resetCodeMatches, clearResetCode } from '../lib/reset-code.js';
 
 export const authRouter = Router();
@@ -124,7 +125,9 @@ function isLoopbackRemote(req: Request): boolean {
 
 // Has the dashboard been set up yet, and is this caller authenticated?
 authRouter.get('/status', (req: Request, res: Response) => {
-  const session = validateSession(bearer(req));
+  // Proxy SSO counts as an authenticated operator: the SPA asks this route
+  // first and renders the login form whenever the answer is false.
+  const session = ssoSession(req) ?? validateSession(bearer(req));
   res.json({
     needsSetup: userCount() === 0,
     authenticated: !!session,
@@ -199,7 +202,7 @@ authRouter.post('/logout', (req: Request, res: Response) => {
 });
 
 authRouter.get('/me', (req: Request, res: Response) => {
-  const session = validateSession(bearer(req));
+  const session = ssoSession(req) ?? validateSession(bearer(req));
   if (!session) {
     res.status(401).json({ error: { message: 'Authentication required', type: 'authentication_error' } });
     return;

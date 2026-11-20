@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { validateSession } from '../services/auth.js';
+import { ssoSession } from '../lib/sso.js';
 
 // Gate the /api/* admin surface behind a dashboard session (#35, item #2).
 // The token is the opaque session token issued by /api/auth/login|setup, sent
@@ -8,7 +9,9 @@ import { validateSession } from '../services/auth.js';
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const token = req.headers.authorization?.replace(/^Bearer\s+/i, '')
     ?? (req.headers['x-dashboard-token'] as string | undefined);
-  const session = validateSession(token);
+  // Core-under SSO first: when the Laravel panel forwards an operator it has
+  // already authenticated, that proxy token IS the session.
+  const session = ssoSession(req) ?? validateSession(token);
   if (!session) {
     res.status(401).json({ error: { message: 'Authentication required', type: 'authentication_error' } });
     return;

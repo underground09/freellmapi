@@ -1,4 +1,14 @@
-const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
+// The dashboard is served both at the gateway root (direct, localhost) and
+// under the Laravel panel at /admin/herramientas/gateway/freellmapi, where the
+// proxy injects window.__FREELMAPI_BASE__ into the HTML it rewrites. Resolve it
+// once here: the injected script always runs before this bundle.
+export function getBasePath(): string {
+  const injected = (window as unknown as { __FREELMAPI_BASE__?: string }).__FREELMAPI_BASE__
+  const base = injected && injected.trim() ? injected.trim() : import.meta.env.BASE_URL
+  return base.replace(/\/+$/, '')
+}
+
+const BASE = getBasePath();
 const TOKEN_KEY = 'freellmapi_dashboard_token';
 
 // Dashboard session token (#35). Stored in localStorage; sent as a Bearer on
