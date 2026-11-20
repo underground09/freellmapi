@@ -23,6 +23,9 @@ const createSchema = z.object({
   // Cadena de enrutamiento a la que queda atada esta API de servicio.
   // Varias APIs pueden apuntar a la MISMA cadena: menos grupos que APIs.
   chainId: z.number().int().positive().nullish(),
+  chainIds: z.array(z.number().int().positive()).max(50).optional(),
+  subscriber: z.string().max(200).nullish(),
+  notes: z.string().max(2000).nullish(),
 });
 
 const updateSchema = z.object({
@@ -32,6 +35,9 @@ const updateSchema = z.object({
   systemPrompt: z.string().max(MAX_PROMPT_LEN).nullable().optional(),
   enabled: z.boolean().optional(),
   chainId: z.number().int().positive().nullable().optional(),
+  chainIds: z.array(z.number().int().positive()).max(50).optional(),
+  subscriber: z.string().max(200).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
 });
 
 interface ProfileRow {
@@ -42,6 +48,9 @@ interface ProfileRow {
   auth_tag: string;
   system_prompt: string | null;
   chain_id: number | null;
+  subscriber: string | null;
+  notes: string | null;
+  activated_at: string | null;
   enabled: number;
   created_at: string;
   updated_at: string;
@@ -55,6 +64,23 @@ function maskedKeyFor(row: Pick<ProfileRow, 'encrypted_key' | 'iv' | 'auth_tag'>
   }
 }
 
+function chainIdsFor(profileId: number): number[] {
+  try {
+    const rows = getDb().prepare('SELECT chain_id FROM client_profile_chains WHERE profile_id = ? ORDER BY chain_id').all(profileId) as { chain_id: number }[];
+    return rows.map(row => Number(row.chain_id));
+  } catch {
+    return [];
+  }
+}
+
+function replaceChains(profileId: number, chainIds: number[]): void {
+  const db = getDb();
+  db.prepare('DELETE FROM client_profile_chains WHERE profile_id = ?').run(profileId);
+  const insert = db.prepare('INSERT OR IGNORE INTO client_profile_chains (profile_id, chain_id) VALUES (?, ?)');
+  [...new Set(chainIds)].forEach(chainId => insert.run(profileId, chainId));
+  db.prepare('UPDATE client_profiles SET chain_id = ? WHERE id = ?').run(chainIds[0] ?? null, profileId);
+}
+
 function toJson(row: ProfileRow) {
   return {
     id: row.id,
@@ -62,6 +88,10 @@ function toJson(row: ProfileRow) {
     maskedKey: maskedKeyFor(row),
     systemPrompt: row.system_prompt,
     chainId: row.chain_id ?? null,
+    chainIds: chainIdsFor(row.id),
+    subscriber: row.subscriber ?? null,
+    notes: row.notes ?? null,
+    activatedAt: row.activated_at ?? null,
     enabled: row.enabled === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -84,6 +114,39 @@ function parseId(req: Request, res: Response): number | null {
 function notFound(res: Response): void {
   res.status(404).json({ error: { message: 'Client profile not found' } });
 }
+
+// Disponibilidad real de una cadena: modelos activos cuyo proveedor tiene al
+// menos una clave en circulación y que no están en cooldown. Barato y honesto:
+// no inventa un ping que no se ha hecho.
+const AVAILABILITY_SQL = `
+  SELECT COUNT(*) AS total,
+         SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END) AS available
+  FROM (
+    SELECT m.id,
+           CASE WHEN EXISTS (
+             SELECT 1 FROM api_keys k
+              WHERE k.platform = m.platform AND k.enabled = 1
+                AND k.status IN ('healthy', 'unknown')
+           ) AND NOT EXISTS (
+             SELECT 1 FROM rate_limit_cooldowns c
+              WHERE c.model_id = m.model_id AND c.expires_at_ms > (strftime('%s','now') * 1000)
+           ) THEN 1 ELSE 0 END AS ok
+      FROM profile_models pm
+      JOIN models m ON m.id = pm.model_db_id
+     WHERE pm.profile_id = ? AND pm.enabled = 1 AND m.enabled = 1
+  )`;
+
+clientProfilesRouter.get('/chains/:id/availability', (req: Request, res: Response) => {
+  const chainId = Number(req.params.id);
+  if (!Number.isInteger(chainId) || chainId <= 0) {
+    res.status(400).json({ error: { message: 'id invalido', type: 'invalid_request' } });
+    return;
+  }
+  const row = getDb().prepare(AVAILABILITY_SQL).get(chainId) as { total: number; available: number | null };
+  const total = Number(row?.total ?? 0);
+  const available = Number(row?.available ?? 0);
+  res.json({ chainId, total, available, unavailable: total - available, checkedAt: new Date().toISOString() });
+});
 
 // Crear un enrutamiento (cadena). Con `platform` se rellena solo con los
 // modelos activos de ese proveedor, que es el caso de uso del panel: "quiero un
@@ -149,9 +212,10 @@ clientProfilesRouter.post('/', (req: Request, res: Response) => {
   const { encrypted, iv, authTag } = encrypt(key);
   const prompt = parsed.data.systemPrompt?.trim() || null;
   const info = getDb().prepare(`
-    INSERT INTO client_profiles (name, token_hash, encrypted_key, iv, auth_tag, system_prompt, chain_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(parsed.data.name, hashClientProfileKey(key), encrypted, iv, authTag, prompt, parsed.data.chainId ?? null);
+    INSERT INTO client_profiles (name, token_hash, encrypted_key, iv, auth_tag, system_prompt, chain_id, subscriber, notes, activated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(parsed.data.name, hashClientProfileKey(key), encrypted, iv, authTag, prompt, parsed.data.chainId ?? parsed.data.chainIds?.[0] ?? null, parsed.data.subscriber ?? null, parsed.data.notes ?? null);
+  if (parsed.data.chainIds?.length) replaceChains(Number(info.lastInsertRowid), parsed.data.chainIds);
   const row = getProfile(Number(info.lastInsertRowid))!;
   // The only time the full key leaves the server (besides rotate).
   res.status(201).json({ ...toJson(row), key });
@@ -168,21 +232,24 @@ clientProfilesRouter.patch('/:id', (req: Request, res: Response) => {
   const row = getProfile(id);
   if (!row) return notFound(res);
 
-  const { name, systemPrompt, enabled, chainId } = parsed.data;
+  const { name, systemPrompt, enabled, chainId, chainIds, subscriber, notes } = parsed.data;
   const nextPrompt = systemPrompt === undefined
     ? row.system_prompt
     : (systemPrompt?.trim() || null);
   getDb().prepare(`
     UPDATE client_profiles
-    SET name = ?, system_prompt = ?, enabled = ?, chain_id = ?, updated_at = datetime('now')
+    SET name = ?, system_prompt = ?, enabled = ?, chain_id = ?, subscriber = ?, notes = ?, updated_at = datetime('now')
     WHERE id = ?
   `).run(
     name ?? row.name,
     nextPrompt,
     enabled === undefined ? row.enabled : (enabled ? 1 : 0),
     chainId === undefined ? row.chain_id : chainId,
+    subscriber === undefined ? row.subscriber : subscriber,
+    notes === undefined ? row.notes : notes,
     id,
   );
+  if (Array.isArray(chainIds)) replaceChains(id, chainIds);
   res.json(toJson(getProfile(id)!));
 });
 
