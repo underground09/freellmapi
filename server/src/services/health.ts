@@ -6,6 +6,7 @@ import { withKeyProxy } from '../lib/proxy.js';
 import type { Platform, KeyStatus } from '@freellmapi/shared/types.js';
 import { inferQuotaPoolKey } from './provider-quota.js';
 import { updateDegradationState } from './degradation.js';
+import { expireOverdueKeys } from './key-access.js';
 import type { Scheduler } from '../lib/scheduler.js';
 import { sanitizeProviderErrorMessage } from '../lib/error-redaction.js';
 import { providerLog } from '../lib/server-logs.js';
@@ -112,7 +113,7 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
 
     const status: KeyStatus = isValid ? 'healthy' : 'invalid';
 
-    db.prepare("UPDATE api_keys SET status = ?, last_health_error = ?, last_checked_at = datetime('now') WHERE id = ?")
+    db.prepare("UPDATE api_keys SET status = ?, last_health_error = ?, last_checked_at = datetime('now') WHERE id = ? AND status NOT IN ('disabled', 'expired', 'billing')")
       .run(status, lastError, keyId);
 
     if (isValid) {
@@ -304,10 +305,14 @@ async function runHealthPass(opts: HealthPassOptions): Promise<HealthPassResult>
 
   // age_ms comes from the DB clock (last_checked_at is written as
   // datetime('now')); the injected `now` above only drives pacing.
+  // Antes de elegir a quién sondear, cierra las APIs cuyo periodo terminó.
+  expireOverdueKeys();
+
   const rows = db.prepare(`
     SELECT id, platform, base_url, status,
            CAST((julianday('now') - julianday(last_checked_at)) * 86400000 AS INTEGER) AS age_ms
     FROM api_keys WHERE enabled = 1
+      AND status NOT IN ('disabled', 'expired', 'billing')
   `).all() as HealthKeyRow[];
 
   const skippedKeyIds: number[] = [];

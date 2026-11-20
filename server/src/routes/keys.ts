@@ -11,6 +11,12 @@ import { assessProviderUrl } from '../lib/url-guard.js';
 import { verifyCredentials } from '../services/auth.js';
 import { getActiveCooldownsForKeys, clearCooldownsForKey } from '../services/ratelimit.js';
 import { getMonthlyBudgetCaps } from '../services/key-budget.js';
+import {
+  expireOverdueKeys,
+  setKeyAccessStatus,
+  KEY_ACCESS_STATUSES,
+  type KeyAccessStatus,
+} from '../services/key-access.js';
 import { resolveCustomEndpointKey, customEndpointKeyIds, siblingEndpointKeyId, endpointHasCredential } from '../services/custom-endpoint.js';
 import { registerCustomModels, registerCustomChatModels } from '../services/custom-model-register.js';
 import { registerCustomMediaModel } from '../services/custom-media-register.js';
@@ -327,6 +333,11 @@ keysRouter.get('/', (_req: Request, res: Response) => {
       monthlyTokenCap: budgetCaps.tokenCap,
       status: row.status,
       enabled: row.enabled === 1,
+      // Acceso por API: estado, motivo y caducidad que apagan la clave entera.
+      kind: (row as any).kind ?? 'api-key',
+      oauthProvider: (row as any).oauth_provider ?? null,
+      expiresAt: (row as any).expires_at ?? null,
+      statusReason: (row as any).status_reason ?? null,
       keyless: resolveProvider(row.platform)?.keyless === true,
       // Lets the export dialog count exactly what the export will write.
       exportable: isExportableKey({ platform: row.platform, baseUrl: row.base_url ?? null, key: realKey }),
@@ -1614,4 +1625,52 @@ keysRouter.patch('/:id', (req: Request, res: Response) => {
   if (key !== undefined) response.maskedKey = maskKey(key);
   if (modelScope !== undefined) response.modelScope = scopeIds.length > 0 ? scopeIds : null;
   res.json(response);
+});
+
+// ── Acceso por API (no por modelo) ─────────────────────────────────────────
+// 'disabled' | 'expired' | 'billing' sacan la clave de TODAS las cadenas, porque
+// el router sólo enruta 'healthy'/'unknown'. Reactivar la deja en 'unknown' para
+// que el siguiente pase de health valide la credencial otra vez.
+keysRouter.post('/:id/access', (req: Request, res: Response) => {
+  const keyId = Number(req.params.id);
+  if (!Number.isInteger(keyId) || keyId <= 0) {
+    res.status(400).json({ error: { message: 'id invalido', type: 'invalid_request' } });
+    return;
+  }
+
+  const body = (req.body ?? {}) as { status?: string; reason?: string; expiresAt?: string | null };
+  const status = String(body.status ?? '').trim() as KeyAccessStatus;
+  if (!KEY_ACCESS_STATUSES.includes(status)) {
+    res.status(400).json({
+      error: {
+        message: `status debe ser uno de: ${KEY_ACCESS_STATUSES.join(', ')}`,
+        type: 'invalid_request',
+      },
+    });
+    return;
+  }
+
+  const db = getDb();
+  if (!db.prepare('SELECT id FROM api_keys WHERE id = ?').get(keyId)) {
+    res.status(404).json({ error: { message: 'Clave no encontrada', type: 'not_found' } });
+    return;
+  }
+
+  expireOverdueKeys();
+  setKeyAccessStatus(keyId, status, body.reason ?? null, body.expiresAt ?? null);
+
+  const row = db
+    .prepare('SELECT id, platform, status, status_reason, expires_at, enabled, kind, oauth_provider FROM api_keys WHERE id = ?')
+    .get(keyId) as Record<string, any>;
+
+  res.json({
+    id: row.id,
+    platform: row.platform,
+    status: row.status,
+    statusReason: row.status_reason ?? null,
+    expiresAt: row.expires_at ?? null,
+    enabled: row.enabled === 1,
+    kind: row.kind ?? 'api-key',
+    oauthProvider: row.oauth_provider ?? null,
+  });
 });
