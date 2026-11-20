@@ -400,7 +400,12 @@ export default function PlaygroundPage() {
     queryFn: () => apiFetch(`/api/client-profiles/chains/${selectedChain!.id}/availability`),
     staleTime: 30_000,
   })
-  const chainMemberOptions = (chainAvailability?.models ?? []).slice(0, 150).map(member => ({
+  // Disponibles primero: con 600 modelos en Default, la lista salía llena de
+  // "no disponible" y no se veía ni uno que funcionara.
+  const chainMembers = [...(chainAvailability?.models ?? [])].sort(
+    (a, b) => Number(b.available) - Number(a.available),
+  )
+  const chainMemberOptions = chainMembers.slice(0, 150).map(member => ({
     value: member.model,
     label: `↳ ${member.model}`,
     sub: `${member.platform} · ${member.available ? 'disponible' : 'no disponible'}`,
