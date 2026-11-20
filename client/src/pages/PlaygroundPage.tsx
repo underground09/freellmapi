@@ -361,15 +361,49 @@ export default function PlaygroundPage() {
     queryKey: ['profiles'],
     queryFn: () => apiFetch('/api/profiles'),
   })
-  const chainOptions = chains
-    .filter(c => c.type === 'custom')
-    .map(c => ({
+  // Cuántos modelos tiene cada enrutamiento (mismo dato que pinta el panel de
+  // Acceso) para que el selector diga a qué se está apuntando.
+  const { data: chainStats = [] } = useQuery<{ id: number; name: string; model_count: number }[]>({
+    queryKey: ['service-chains'],
+    queryFn: () => apiFetch('/api/client-profiles/chains'),
+  })
+
+  // Todos los enrutamientos, incluido `Default`: antes se filtraba a type
+  // 'custom' y el enrutamiento base no se podía probar desde aquí.
+  const chainOptions = chains.map(c => {
+    const stats = chainStats.find(entry => entry.name === c.name)
+    const suffix = stats ? ` · ${stats.model_count} modelos` : ''
+    return {
       value: `auto:${c.name.toLowerCase()}`,
-      label: c.emoji ? `${c.emoji} ${c.name}` : c.name,
+      label: `${c.emoji ? `${c.emoji} ` : '⚡ '}${c.name}${suffix}`,
       sub: `auto:${c.name.toLowerCase()}`,
       isNew: false,
       platforms: [] as string[],
-    }))
+    }
+  })
+
+  // Con un enrutamiento seleccionado, sus modelos se listan justo debajo: así se
+  // prueba el enrutamiento (auto:<cadena>) y, dentro de él, un modelo concreto
+  // sin salir del Playground.
+  const selectedChainName = selectedModel.startsWith('auto:') ? selectedModel.slice(5) : null
+  const selectedChain = chains.find(c => c.name.toLowerCase() === selectedChainName)
+  const { data: chainAvailability } = useQuery<{
+    chainId: number
+    models: { model: string; platform: string; available: boolean }[]
+  }>({
+    queryKey: ['chain-members', selectedChain?.id ?? 0],
+    enabled: Boolean(selectedChain?.id),
+    queryFn: () => apiFetch(`/api/client-profiles/chains/${selectedChain!.id}/availability`),
+    staleTime: 30_000,
+  })
+  const chainMemberOptions = (chainAvailability?.models ?? []).slice(0, 150).map(member => ({
+    value: member.model,
+    label: `↳ ${member.model}`,
+    sub: `${member.platform} · ${member.available ? 'disponible' : 'no disponible'}`,
+    isNew: false,
+    platforms: [] as string[],
+    note: member.available ? undefined : 'no disponible en este enrutamiento',
+  }))
 
   // Unification is always on now (the on/off toggle was removed), so the picker
   // always collapses a model's providers into one option.
@@ -910,6 +944,7 @@ export default function PlaygroundPage() {
     { value: 'auto', label: t('playground.autoModel'), sub: '', isNew: false, platforms: [] as string[] },
     { value: 'fusion', label: t('playground.fusionModel'), sub: '', isNew: false, platforms: [] as string[] },
     ...chainOptions,
+    ...chainMemberOptions,
     ...modelOptions
       .slice()
       .sort((a, b) =>
