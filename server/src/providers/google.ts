@@ -540,6 +540,20 @@ function extractToolCalls(parts: GeminiPart[] | undefined): ChatToolCall[] {
   return calls;
 }
 
+/**
+ * Google devuelve este aviso COMO CONTENIDO (HTTP 200, en el propio stream o en
+ * el texto) cuando el cliente Code Assist o el modelo no están soportados en la
+ * cuenta:
+ *   «This version of Antigravity is no longer supported. Please download and
+ *    install the latest version at https://antigravity.google/download …»
+ * Si se deja pasar, el panel lo pinta como si fuera la respuesta del modelo y
+ * luego corta con «stream interrupted». Se detecta aquí y se lanza como error
+ * de proveedor: el router hace failover y el usuario ve la causa real.
+ */
+function isUnsupportedClientNotice(text: string): boolean {
+  return /no longer supported/i.test(text) && /antigravity|gemini code assist|code assist/i.test(text);
+}
+
 function extractText(parts: GeminiPart[] | undefined): string | null {
   if (!parts) return null;
   const text = parts
@@ -706,6 +720,9 @@ export class GoogleProvider extends BaseProvider {
     const parts = candidate?.content?.parts;
     const toolCalls = extractToolCalls(parts);
     const text = extractText(parts);
+    if (text && isUnsupportedClientNotice(text)) {
+      throw new Error(`Google: cliente no soportado (${text.trim().slice(0, 140)})`);
+    }
     const reasoningContent = extractReasoningContent(parts);
 
     const usage: TokenUsage = {
@@ -853,6 +870,10 @@ export class GoogleProvider extends BaseProvider {
           const parts = candidate?.content?.parts ?? [];
 
           const text = extractText(parts);
+          if (text && isUnsupportedClientNotice(text)) {
+            // Cortar ANTES de emitirlo: el router puede saltar al siguiente modelo.
+            throw new Error(`Google: cliente no soportado (${text.trim().slice(0, 140)})`);
+          }
           const reasoningContent = extractReasoningContent(parts);
           const toolCalls = extractToolCalls(parts).filter(call => {
             const key = `${call.id}:${call.function.name}:${call.function.arguments}`;
