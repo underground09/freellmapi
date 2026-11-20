@@ -20,6 +20,9 @@ const MAX_PROMPT_LEN = 32_000;
 const createSchema = z.object({
   name: z.string().trim().min(1).max(MAX_NAME_LEN),
   systemPrompt: z.string().max(MAX_PROMPT_LEN).nullish(),
+  // Cadena de enrutamiento a la que queda atada esta API de servicio.
+  // Varias APIs pueden apuntar a la MISMA cadena: menos grupos que APIs.
+  chainId: z.number().int().positive().nullish(),
 });
 
 const updateSchema = z.object({
@@ -28,6 +31,7 @@ const updateSchema = z.object({
   // injecting anything); absent leaves it untouched.
   systemPrompt: z.string().max(MAX_PROMPT_LEN).nullable().optional(),
   enabled: z.boolean().optional(),
+  chainId: z.number().int().positive().nullable().optional(),
 });
 
 interface ProfileRow {
@@ -37,6 +41,7 @@ interface ProfileRow {
   iv: string;
   auth_tag: string;
   system_prompt: string | null;
+  chain_id: number | null;
   enabled: number;
   created_at: string;
   updated_at: string;
@@ -56,6 +61,7 @@ function toJson(row: ProfileRow) {
     name: row.name,
     maskedKey: maskedKeyFor(row),
     systemPrompt: row.system_prompt,
+    chainId: row.chain_id ?? null,
     enabled: row.enabled === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -79,6 +85,23 @@ function notFound(res: Response): void {
   res.status(404).json({ error: { message: 'Client profile not found' } });
 }
 
+// Cadenas de enrutamiento disponibles para atar una API de servicio. Es la
+// lista corta a propósito: varias APIs pueden compartir la misma cadena, así
+// que se crean menos grupos que APIs.
+clientProfilesRouter.get('/chains', (_req: Request, res: Response) => {
+  const rows = getDb().prepare(`
+    SELECT p.id,
+           p.name,
+           COUNT(pm.model_db_id) AS model_count,
+           (SELECT COUNT(*) FROM client_profiles cp WHERE cp.chain_id = p.id) AS api_count
+    FROM profiles p
+    LEFT JOIN profile_models pm ON pm.profile_id = p.id AND pm.enabled = 1
+    GROUP BY p.id
+    ORDER BY p.name COLLATE NOCASE
+  `).all() as { id: number; name: string; model_count: number; api_count: number }[];
+  res.json(rows);
+});
+
 clientProfilesRouter.get('/', (_req: Request, res: Response) => {
   const rows = getDb().prepare('SELECT * FROM client_profiles ORDER BY id').all() as ProfileRow[];
   res.json(rows.map(toJson));
@@ -94,9 +117,9 @@ clientProfilesRouter.post('/', (req: Request, res: Response) => {
   const { encrypted, iv, authTag } = encrypt(key);
   const prompt = parsed.data.systemPrompt?.trim() || null;
   const info = getDb().prepare(`
-    INSERT INTO client_profiles (name, token_hash, encrypted_key, iv, auth_tag, system_prompt)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(parsed.data.name, hashClientProfileKey(key), encrypted, iv, authTag, prompt);
+    INSERT INTO client_profiles (name, token_hash, encrypted_key, iv, auth_tag, system_prompt, chain_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(parsed.data.name, hashClientProfileKey(key), encrypted, iv, authTag, prompt, parsed.data.chainId ?? null);
   const row = getProfile(Number(info.lastInsertRowid))!;
   // The only time the full key leaves the server (besides rotate).
   res.status(201).json({ ...toJson(row), key });
@@ -113,18 +136,19 @@ clientProfilesRouter.patch('/:id', (req: Request, res: Response) => {
   const row = getProfile(id);
   if (!row) return notFound(res);
 
-  const { name, systemPrompt, enabled } = parsed.data;
+  const { name, systemPrompt, enabled, chainId } = parsed.data;
   const nextPrompt = systemPrompt === undefined
     ? row.system_prompt
     : (systemPrompt?.trim() || null);
   getDb().prepare(`
     UPDATE client_profiles
-    SET name = ?, system_prompt = ?, enabled = ?, updated_at = datetime('now')
+    SET name = ?, system_prompt = ?, enabled = ?, chain_id = ?, updated_at = datetime('now')
     WHERE id = ?
   `).run(
     name ?? row.name,
     nextPrompt,
     enabled === undefined ? row.enabled : (enabled ? 1 : 0),
+    chainId === undefined ? row.chain_id : chainId,
     id,
   );
   res.json(toJson(getProfile(id)!));
