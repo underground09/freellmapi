@@ -6,6 +6,9 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { keysRouter } from './routes/keys.js';
 import { clientProfilesRouter } from './routes/client-profiles.js';
+import { oauthRouter } from './routes/oauth.js';
+import { usageRouter } from './routes/usage.js';
+import { refreshDueOauthKeys } from './services/gemini-oauth.js';
 import { conversationsRouter } from './routes/conversations.js';
 import { logsRouter } from './routes/logs.js';
 import { modelsRouter } from './routes/models.js';
@@ -240,7 +243,14 @@ export function createApp(config?: Config) {
   // tight per-IP bucket on top of it.
   app.use('/api/keys/export', createAdminRateLimiter(EXPORT_RATE_LIMIT_RPM));
 
+  // OAuth de cuentas externas (Gemini CLI). Va SIN requireAuth porque el
+  // callback lo invoca Google desde el navegador del usuario, sin sesión del
+  // panel. El gateway sólo escucha en 127.0.0.1 y el único camino exterior es
+  // el proxy autenticado de Laravel.
+  app.use('/api/oauth', oauthRouter);
+
   app.use('/api/keys', requireAuth, keysRouter);
+  app.use('/api/usage', requireAuth, usageRouter);
   // Per-client key management (#411). Dashboard-session gated like the rest of
   // /api — the profile keys it mints authenticate only the /v1 inference
   // surface and are never valid here.
@@ -294,6 +304,18 @@ export function createApp(config?: Config) {
   // OpenAI-compatible proxy. Per-IP rate limiting (#35 item #6) runs first so
   // it throttles unauthenticated brute-force / flood attempts before any
   // routing work. Tune via PROXY_RATE_LIMIT_RPM; 0 disables it.
+  // Renueva los access_token OAuth que estén dentro del margen ANTES de
+  // despachar: el selector de clave es síncrono, así que el token tiene que
+  // estar fresco al llegar ahí. Si el refresco falla, gemini-oauth marca la
+  // clave status='expired' y sale de todas las cadenas.
+  app.use('/v1', async (_req, _res, next) => {
+    try {
+      await refreshDueOauthKeys();
+    } catch {
+      // Un fallo del refresco no puede tumbar la petición del cliente.
+    }
+    next();
+  });
   app.use('/v1', createProxyRateLimiter(cfg.proxyRateLimitRpm));
   // Anthropic-compatible Messages API (`POST /v1/messages`, `/count_tokens`) for
   // Claude Code and anything else speaking the Anthropic SDK. Mounted BEFORE the

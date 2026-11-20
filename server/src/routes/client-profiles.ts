@@ -292,3 +292,59 @@ clientProfilesRouter.delete('/:id', (req: Request, res: Response) => {
   if (info.changes === 0) return notFound(res);
   res.json({ success: true });
 });
+
+// Rellenar una cadena que YA existe con los modelos de una plataforma.
+//
+// `POST /chains` sólo siembra al crear: las cadenas que se crearon mientras el
+// catálogo no tenía filas del proveedor (huggingface, ollama) se quedaron en
+// 0/0 y no hace falta borrarlas para arreglarlas. Sólo AÑADE modelos de esa
+// plataforma; no quita nada de la cadena.
+clientProfilesRouter.post('/chains/:id/fill', (req: Request, res: Response) => {
+  const db = getDb();
+  const chainId = Number(req.params.id);
+  if (!Number.isInteger(chainId) || chainId <= 0) {
+    res.status(400).json({ error: { message: 'id invalido', type: 'invalid_request' } });
+    return;
+  }
+
+  const chain = db.prepare('SELECT id, name FROM profiles WHERE id = ?').get(chainId) as { id: number; name: string } | undefined;
+  if (!chain) {
+    res.status(404).json({ error: { message: 'Enrutamiento no encontrado', type: 'not_found' } });
+    return;
+  }
+
+  const body = (req.body ?? {}) as { platform?: unknown };
+  const platform = typeof body.platform === 'string' && body.platform.trim()
+    ? body.platform.trim()
+    : chain.name;
+
+  const models = db
+    .prepare('SELECT id FROM models WHERE platform = ? AND enabled = 1 ORDER BY intelligence_rank ASC')
+    .all(platform) as { id: number }[];
+  if (models.length === 0) {
+    res.status(409).json({
+      error: {
+        message: `El catálogo no tiene modelos de «${platform}»: impórtalos primero con POST /api/keys/import-models`,
+        type: 'no_models_for_platform',
+      },
+    });
+    return;
+  }
+
+  const start = db
+    .prepare('SELECT COALESCE(MAX(priority), -1) + 1 AS next FROM profile_models WHERE profile_id = ?')
+    .get(chainId) as { next: number };
+  const insert = db.prepare('INSERT OR IGNORE INTO profile_models (profile_id, model_db_id, priority, enabled) VALUES (?, ?, ?, 1)');
+  let added = 0;
+  const run = db.transaction(() => {
+    models.forEach((model, index) => {
+      const info = insert.run(chainId, model.id, start.next + index);
+      if (info.changes > 0) added += 1;
+    });
+  });
+  run();
+  db.prepare('UPDATE profiles SET auto_include_new_models = 0 WHERE id = ?').run(chainId);
+
+  const total = db.prepare('SELECT COUNT(*) AS n FROM profile_models WHERE profile_id = ?').get(chainId) as { n: number };
+  res.json({ id: chainId, name: chain.name, platform, added, model_count: total.n });
+});

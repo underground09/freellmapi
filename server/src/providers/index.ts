@@ -34,6 +34,31 @@ function register(provider: BaseProvider) {
 // bulk; per-call overrides via CompletionOptions.timeoutMs still win.
 register(new GoogleProvider({ timeoutMs: 60_000 }));
 
+// Gemini CLI por OAuth (Google Cloud Code Assist). Mismo protocolo Gemini que
+// AI Studio, pero otro host, otra autenticación (Bearer) y OTRA cuota: Code
+// Assist no comparte límites con el plan Pro de la app ni con AI Studio.
+// Los tokens fríos de los modelos grandes tardan; 180s de presupuesto.
+register(new GoogleProvider({
+  platform: 'gemini-cli',
+  name: 'Gemini CLI (Code Assist)',
+  cloudCode: true,
+  timeoutMs: 180_000,
+}));
+
+// Antigravity: el cliente que Google indica cuando retira el del Gemini CLI.
+// Habla el mismo Code Assist, pero por el host del IDE y con sus cabeceras.
+register(new GoogleProvider({
+  platform: 'antigravity',
+  name: 'Antigravity (Code Assist)',
+  cloudCode: true,
+  cloudCodeBaseUrl: 'https://daily-cloudcode-pa.googleapis.com/v1internal',
+  cloudCodeHeaders: {
+    'User-Agent': 'antigravity/ide/2.1.1 darwin/arm64',
+    'x-request-source': 'local',
+  },
+  timeoutMs: 180_000,
+}));
+
 // Groq - OpenAI-compatible
 register(new OpenAICompatProvider({
   platform: 'groq',

@@ -7,9 +7,10 @@ import type { Platform } from '../../../../shared/types'
 import { AddKeyForm, type AddedKeyScopeOffer } from './add-key-form'
 import { ImportKeysSection } from './import-keys-section'
 import { CustomProviderSection } from './custom-provider-section'
+import { OauthGeminiSection } from './oauth-gemini-section'
 import { ModelSelectDialog } from './model-select-dialog'
 
-type Pane = 'provider' | 'import' | 'custom'
+type Pane = 'provider' | 'import' | 'custom' | 'google'
 
 // The single "Add key" surface: one dialog, three panes (paste a provider key,
 // import a file, or point at a custom OpenAI-compatible endpoint). Each pane
@@ -66,6 +67,9 @@ export function AddKeyDialog({ open, onOpenChange, initialPlatform }: {
               { value: 'provider', label: t('keys.paneProviderKey') },
               { value: 'import', label: t('keys.paneImportFile') },
               { value: 'custom', label: t('keys.paneCustomEndpoint') },
+              // Cuenta Google por OAuth (Gemini CLI): no es una clave pegada, así
+              // que tiene su propio panel para no confundirla con las de API.
+              { value: 'google', label: 'Cuenta Google' },
             ]}
             ariaLabel={t('keys.addKey')}
             className="mb-5"
@@ -74,6 +78,22 @@ export function AddKeyDialog({ open, onOpenChange, initialPlatform }: {
           {pane === 'provider' && <AddKeyForm onSuccess={finishAdd} initialPlatform={initialPlatform} />}
           {pane === 'import' && <ImportKeysSection onImported={close} />}
           {pane === 'custom' && <CustomProviderSection onAdded={close} />}
+          {pane === 'google' && (
+            <div className="space-y-3">
+              <OauthGeminiSection
+                provider="antigravity"
+                title="Antigravity (recomendado)"
+                description="Cuenta Google para Code Assist con el cliente vigente del IDE Antigravity. Es el camino que Google indica tras retirar el cliente del Gemini CLI. La cuota de Code Assist no es la del plan Pro ni la de AI Studio: se cuenta aparte."
+                onConnected={close}
+              />
+              <OauthGeminiSection
+                provider="gemini"
+                title="Gemini CLI (retirado por Google)"
+                description="Cliente histórico. Google responde UNSUPPORTED_CLIENT en loadCodeAssist/onboardUser, así que no da proyecto y no sirve para llamar. Se deja solo para diagnóstico."
+                onConnected={close}
+              />
+            </div>
+          )}
         </DialogPopup>
       </Dialog>
 

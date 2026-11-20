@@ -6,6 +6,7 @@ import type {
   ChatToolChoice,
   ChatToolDefinition,
   TokenUsage,
+  Platform,
 } from '@freellmapi/shared/types.js';
 import { BaseProvider, providerHttpError, type CompletionOptions, type KeyValidationResult } from './base.js';
 import { contentToString } from '../lib/content.js';
@@ -18,6 +19,41 @@ import { resolveMaxTokens } from '../lib/sampling-params.js';
 export { sanitizeForGemini } from '../lib/gemini-wire.js';
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+
+/**
+ * Code Assist envuelve la respuesta de Gemini en `{ response: {...} }` (también
+ * en cada frame SSE). AI Studio la manda plana. Sin desenvolver, `candidates`
+ * sale undefined y el gateway lo reporta como `empty_completion`.
+ */
+function unwrapCodeAssist<T extends { candidates?: unknown }>(payload: T): T {
+  const inner = (payload as unknown as { response?: T }).response;
+  return inner && typeof inner === 'object' ? inner : payload;
+}
+// Code Assist (Gemini CLI por OAuth): mismo protocolo Gemini, otro host y
+// una envoltura {model, project, request} con Authorization: Bearer.
+const CODE_ASSIST_BASE = 'https://cloudcode-pa.googleapis.com/v1internal';
+/** Suelo de tokens de salida en Code Assist: por debajo, Claude/Gemini del IDE
+ *  responden vacío (gastan el presupuesto razonando). */
+const CLOUD_CODE_MIN_OUTPUT_TOKENS = 512;
+const CLOUD_CODE_HEADERS: Record<string, string> = {
+  'User-Agent': 'google-api-nodejs-client/9.15.1',
+  'X-Goog-Api-Client': 'google-cloud-sdk vscode_cloudshelleditor/0.1',
+  'Client-Metadata': JSON.stringify({ ideType: 9, platform: 5, pluginType: 2 }),
+};
+
+/** El secreto de una clave OAuth llega como JSON {accessToken, projectId}. */
+function oauthSecret(apiKey: string): { accessToken: string; projectId: string } {
+  const trimmed = apiKey.trim();
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed) as { accessToken?: string; projectId?: string };
+      return { accessToken: parsed.accessToken ?? '', projectId: parsed.projectId ?? '' };
+    } catch {
+      // cae al modo token plano
+    }
+  }
+  return { accessToken: trimmed, projectId: '' };
+}
 
 // Gemini 3 REQUIRES the `thoughtSignature` that accompanied a function call to
 // be echoed back whenever that call appears in conversation history, or it
@@ -532,17 +568,86 @@ export interface GoogleProviderOptions {
    *  Gemma reasoning variants) take 20-60s on cold start; the OpenAI-compat
    *  default of 15s false-flags them as broken. Mirrors OpenAICompatProvider. */
   timeoutMs?: number;
+  /** Plataforma con la que se registra este adaptador ('google' por defecto,
+   *  'gemini-cli' para las cuentas OAuth de Code Assist). */
+  platform?: Platform;
+  /** Nombre visible en el panel. */
+  name?: string;
+  /** Modo Code Assist: distinto host, envoltura {model,project,request} y
+   *  Authorization: Bearer <access_token> en vez de x-goog-api-key. */
+  cloudCode?: boolean;
+  /** Host de Code Assist ('daily-cloudcode-pa' para Antigravity). */
+  cloudCodeBaseUrl?: string;
+  /** Cabeceras extra del cliente IDE (User-Agent, x-request-source…). */
+  cloudCodeHeaders?: Record<string, string>;
 }
 
 export class GoogleProvider extends BaseProvider {
-  readonly platform = 'google' as const;
-  readonly name = 'Google AI Studio';
+  readonly platform: Platform;
+  readonly name: string;
   private readonly timeoutMs: number;
+  private readonly cloudCode: boolean;
+  private readonly cloudCodeBaseUrl: string;
+  private readonly cloudCodeHeaders: Record<string, string>;
 
   constructor(opts: GoogleProviderOptions = {}) {
     super();
+    this.platform = opts.platform ?? 'google';
+    this.name = opts.name ?? 'Google AI Studio';
+    this.cloudCode = opts.cloudCode ?? false;
+    this.cloudCodeBaseUrl = opts.cloudCodeBaseUrl ?? CODE_ASSIST_BASE;
+    this.cloudCodeHeaders = opts.cloudCodeHeaders ?? {};
     // PROVIDER_TIMEOUT_GOOGLE wins over the registration default (#547).
-    this.timeoutMs = providerTimeoutMs('google', opts.timeoutMs ?? 15000);
+    this.timeoutMs = providerTimeoutMs(this.platform, opts.timeoutMs ?? 15000);
+  }
+
+  /** Endpoint de generación: AI Studio o Code Assist. */
+  private endpointUrl(modelId: string, stream: boolean): string {
+    const action = stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
+    return this.cloudCode
+      ? `${this.cloudCodeBaseUrl}:${action}`
+      : `${API_BASE}/models/${modelId}:${action}`;
+  }
+
+  /** Cabeceras de la petición de generación. */
+  private requestHeaders(apiKey: string): Record<string, string> {
+    if (!this.cloudCode) {
+      return { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey };
+    }
+    const { accessToken } = oauthSecret(apiKey);
+    return {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+      ...CLOUD_CODE_HEADERS,
+      ...this.cloudCodeHeaders,
+    };
+  }
+
+  /**
+   * Ajustes propios de Code Assist (Antigravity / gemini-cli).
+   *
+   * Medido contra la API real: con `includeThoughts` activo el modelo manda TODO
+   * el texto como parte de pensamiento y `extractText` se queda sin nada → el
+   * gateway lo reporta como `empty_completion` (finishReason MAX_TOKENS sin
+   * `parts` visibles). Además, con presupuestos pequeños (8–64 tokens) los
+   * modelos Claude del IDE se comen la salida razonando. Aquí se fija
+   * `includeThoughts: false` y un suelo de salida.
+   */
+  private applyCloudCodeTuning(body: Record<string, unknown>): void {
+    const config = (body.generationConfig ?? {}) as Record<string, unknown>;
+    config.thinkingConfig = { includeThoughts: false };
+    const requested = Number(config.maxOutputTokens ?? 0);
+    if (!Number.isFinite(requested) || requested < CLOUD_CODE_MIN_OUTPUT_TOKENS) {
+      config.maxOutputTokens = CLOUD_CODE_MIN_OUTPUT_TOKENS;
+    }
+    body.generationConfig = config;
+  }
+
+  /** Cuerpo de la petición: Code Assist lo envuelve con modelo y proyecto. */
+  private wrapRequestBody(body: Record<string, unknown>, modelId: string, apiKey: string): unknown {
+    if (!this.cloudCode) return body;
+    const { projectId } = oauthSecret(apiKey);
+    return { model: modelId, project: projectId, request: body };
   }
 
   async chatCompletion(
@@ -571,12 +676,13 @@ export class GoogleProvider extends BaseProvider {
       toolConfig: hasFunctionDeclarations(tools) ? toGeminiToolConfig(options?.tool_choice) : undefined,
     };
     if (request.systemInstruction) body.systemInstruction = request.systemInstruction;
+    if (this.cloudCode) this.applyCloudCodeTuning(body);
 
-    const url = `${API_BASE}/models/${modelId}:generateContent`;
+    const url = this.endpointUrl(modelId, false);
     const res = await this.fetchWithTimeout(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(body),
+      headers: this.requestHeaders(apiKey),
+      body: JSON.stringify(this.wrapRequestBody(body, modelId, apiKey)),
       // 'request' bounds: the deadline covers the body read too, so a 200
       // whose body hangs aborts instead of stalling res.json() forever.
     }, options?.timeoutMs ?? this.timeoutMs, { signal: options?.signal, timeoutBounds: 'request' });
@@ -595,7 +701,7 @@ export class GoogleProvider extends BaseProvider {
       throw providerHttpError(res, `Google API error ${res.status}: ${(err as any).error?.message ?? res.statusText}`, err);
     }
 
-    const data = await res.json() as GeminiResponse;
+    const data = unwrapCodeAssist(await res.json() as GeminiResponse);
     const candidate = data.candidates?.[0];
     const parts = candidate?.content?.parts;
     const toolCalls = extractToolCalls(parts);
@@ -624,7 +730,9 @@ export class GoogleProvider extends BaseProvider {
         finish_reason: toolCalls.length > 0 ? 'tool_calls' : toGeminiFinishReason(candidate?.finishReason),
       }],
       usage,
-      _routed_via: { platform: 'google', model: modelId },
+      // this.platform, no 'google' fijo: este adaptador también sirve a
+      // gemini-cli y antigravity, y el panel muestra lo que diga aquí.
+      _routed_via: { platform: this.platform, model: modelId },
     };
   }
 
@@ -652,12 +760,13 @@ export class GoogleProvider extends BaseProvider {
       toolConfig: hasFunctionDeclarations(tools) ? toGeminiToolConfig(options?.tool_choice) : undefined,
     };
     if (request.systemInstruction) body.systemInstruction = request.systemInstruction;
+    if (this.cloudCode) this.applyCloudCodeTuning(body);
 
-    const url = `${API_BASE}/models/${modelId}:streamGenerateContent?alt=sse`;
+    const url = this.endpointUrl(modelId, true);
     const res = await this.fetchWithTimeout(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(body),
+      headers: this.requestHeaders(apiKey),
+      body: JSON.stringify(this.wrapRequestBody(body, modelId, apiKey)),
       // Default 'headers' bounds: the deadline dies at response headers, and
       // the client signal + stall watchdog own the stream from there.
     }, options?.timeoutMs ?? this.timeoutMs, { signal: options?.signal });
@@ -736,7 +845,7 @@ export class GoogleProvider extends BaseProvider {
           // a single corrupt chunk shouldn't take down the rest of the response.
           let chunk: GeminiResponse;
           try {
-            chunk = JSON.parse(raw) as GeminiResponse;
+            chunk = unwrapCodeAssist(JSON.parse(raw) as GeminiResponse);
           } catch {
             continue;
           }
@@ -820,6 +929,9 @@ export class GoogleProvider extends BaseProvider {
   }
 
   async validateKey(apiKey: string, quotaContext?: QuotaObservationContext): Promise<KeyValidationResult> {
+    // Code Assist no publica /models para una cuenta OAuth: el chequeo real
+    // de credencial es loadCodeAssist (el mismo que usa el CLI al arrancar).
+    if (this.cloudCode) return this.validateCloudCodeKey(apiKey);
     // Transport errors propagate — health.ts marks status='error' without
     // counting toward auto-disable.
     const res = await this.fetchWithTimeout(
@@ -879,5 +991,31 @@ export class GoogleProvider extends BaseProvider {
       `Google key validation inconclusive (HTTP ${res.status}${gStatus ? ` ${gStatus}` : ''}${reason ? ` ${reason}` : ''})` +
       `${message ? `: ${message}` : ''}`,
     );
+  }
+
+  /** Validación de una cuenta Code Assist: loadCodeAssist con el access token. */
+  private async validateCloudCodeKey(apiKey: string): Promise<KeyValidationResult> {
+    const { accessToken } = oauthSecret(apiKey);
+    const res = await this.fetchWithTimeout(
+      'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+          ...CLOUD_CODE_HEADERS,
+          ...this.cloudCodeHeaders,
+        },
+        body: JSON.stringify({ metadata: JSON.parse(CLOUD_CODE_HEADERS['Client-Metadata']), mode: 1 }),
+      },
+      15000,
+      { timeoutBounds: 'request' },
+    );
+    if (res.ok) return true;
+    if (res.status === 401 || res.status === 403) {
+      const detail = await res.text().catch(() => '');
+      return { valid: false, error: `Code Assist rechazó la cuenta (HTTP ${res.status}): ${detail.slice(0, 200)}` };
+    }
+    throw new Error(`Code Assist inconcluso (HTTP ${res.status})`);
   }
 }

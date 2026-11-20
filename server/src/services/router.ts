@@ -1,5 +1,6 @@
 import { getDb, getSetting, setSetting } from '../db/index.js';
 import { getProvider, hasProvider, resolveProvider } from '../providers/index.js';
+import { resolveKeySecret } from './gemini-oauth.js';
 import { decrypt } from '../lib/crypto.js';
 import { decryptProxyUrl } from '../lib/key-proxy.js';
 import {
@@ -1509,7 +1510,10 @@ function selectKeyForModel(entry: ChainRow, estimatedTokens: number, skipKeys?: 
 
     let decryptedKey: string;
     try {
-      decryptedKey = decrypt(key.encrypted_key, key.iv, key.auth_tag);
+      // resolveKeySecret entiende las claves kind='oauth' (Gemini CLI): devuelve
+      // el access_token vigente en vez del JSON crudo y lanza si está caducado,
+      // de modo que la clave se descarta aquí en vez de mandar un token muerto.
+      decryptedKey = resolveKeySecret(key as any);
     } catch {
       db.prepare("UPDATE api_keys SET status = 'error', last_checked_at = datetime('now') WHERE id = ?")
         .run(key.id);

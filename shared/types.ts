@@ -61,6 +61,12 @@ export interface ImportSelectedResponse {
 // SambaNova was dropped in V23 (free tier permanently retired — 402
 // "payment method required" once the one-time $5 trial credit lapses).
 export type Platform =
+  // Gemini CLI por OAuth (Google Cloud Code Assist). Es un camino de cuota
+  // DISTINTO al de AI Studio: ni los contadores ni el % de uso se mezclan.
+  | 'gemini-cli'
+  // Antigravity (IDE de Google): mismo Code Assist, cliente vigente. Es el
+  // sustituto que Google indica cuando rechaza el cliente del Gemini CLI.
+  | 'antigravity'
   | 'google'
   | 'groq'
   | 'cerebras'

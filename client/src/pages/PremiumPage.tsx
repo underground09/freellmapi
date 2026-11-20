@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { CardSkeleton } from '@/components/ui/skeleton'
 import { toast } from '@/lib/toast'
+import { CopyButton } from '@/components/copy-button'
 
 interface ServiceApi {
   id: number
@@ -42,6 +43,34 @@ interface Availability {
   checkedAt: string
 }
 
+type UsageStatus = 'green' | 'amber' | 'red' | 'unknown'
+
+interface UsageItem {
+  model: string
+  platform: string
+  keyId: number
+  window: 'day' | 'month'
+  used: number
+  tokens: number
+  limit: number | null
+  remaining: number | null
+  pct: number | null
+  resetAt: string | null
+  lastUsedAt: string | null
+  status: UsageStatus
+  limitSource: string | null
+}
+
+interface UsageResponse {
+  window: 'day' | 'month'
+  since: string
+  checkedAt: string
+  total: number
+  withLimit: number
+  withoutLimit: number
+  items: UsageItem[]
+}
+
 export default function PremiumPage() {
   const queryClient = useQueryClient()
   const [apiName, setApiName] = useState('')
@@ -53,6 +82,7 @@ export default function PremiumPage() {
   const [avail, setAvail] = useState<Record<number, Availability>>({})
   const [logFor, setLogFor] = useState<number | null>(null)
   const [logTab, setLogTab] = useState<'up' | 'down'>('up')
+  const [usageWindow, setUsageWindow] = useState<'day' | 'month'>('day')
 
   const apisQuery = useQuery<ServiceApi[]>({
     queryKey: ['service-apis'],
@@ -71,6 +101,39 @@ export default function PremiumPage() {
   const chains = chainsQuery.data ?? []
   const providerKeys = Array.isArray(keysQuery.data) ? keysQuery.data : (keysQuery.data?.keys ?? [])
   const platforms = [...new Set(providerKeys.map(key => key.platform))].sort()
+
+  // Cuántos modelos tiene el catálogo por proveedor: es el dato que explica un
+  // enrutamiento 0/0 (proveedor con clave pero sin filas en `models`).
+  const modelsQuery = useQuery<unknown>({
+    queryKey: ['models'],
+    queryFn: () => apiFetch('/api/models'),
+  })
+  const catalog = (Array.isArray(modelsQuery.data)
+    ? modelsQuery.data
+    : ((modelsQuery.data as { models?: { platform: string }[] } | undefined)?.models ?? [])) as { platform: string }[]
+  const modelCount = (platform: string) => catalog.filter(model => model.platform === platform).length
+
+  const usageQuery = useQuery<UsageResponse>({
+    queryKey: ['usage-by-model', usageWindow],
+    queryFn: () => apiFetch<UsageResponse>(`/api/usage/by-model?window=${usageWindow}`),
+    refetchInterval: 60000,
+  })
+
+  const importModels = useMutation({
+    mutationFn: (platform: string) =>
+      apiFetch<{ platform: string; fetched: number; created: number; updated: number; total: number }>(
+        '/api/keys/import-models',
+        { method: 'POST', body: JSON.stringify({ platform }) },
+      ),
+    onSuccess: result => {
+      queryClient.invalidateQueries({ queryKey: ['models'] })
+      refresh()
+      toast.success(
+        `${result.platform}: ${result.created} nuevos, ${result.updated} actualizados · ${result.total} en catálogo`,
+      )
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['service-apis'] })
@@ -130,6 +193,21 @@ export default function PremiumPage() {
   })
 
   const chainName = (id: number) => chains.find(chain => chain.id === id)?.name ?? `#${id}`
+
+  // Rellenar una cadena que ya existe y salió vacía porque el catálogo no tenía
+  // modelos de ese proveedor (0/0). Sólo añade; no borra nada.
+  const fillChain = useMutation({
+    mutationFn: (chain: Chain) =>
+      apiFetch<{ id: number; name: string; platform: string; added: number; model_count: number }>(
+        `/api/client-profiles/chains/${chain.id}/fill`,
+        { method: 'POST', body: JSON.stringify({ platform: chain.name }) },
+      ),
+    onSuccess: result => {
+      refresh()
+      toast.success(`«${result.name}»: ${result.added} modelos añadidos (${result.model_count} en total)`)
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
 
   // Disponibilidad real por enrutamiento (claves en circulación + cooldowns).
   const availabilityQueries = useQueries({
@@ -348,6 +426,18 @@ export default function PremiumPage() {
                     <span className="text-[11px] text-muted-foreground">{chain.api_count} APIs</span>
                   </div>
                   <p className="text-[11px] text-muted-foreground">{chain.model_count} modelos</p>
+                  {chain.model_count === 0 ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="px-1 text-[10px] text-amber-300"
+                      disabled={fillChain.isPending}
+                      title="Añadir a este enrutamiento los modelos ya importados de este proveedor"
+                      onClick={() => fillChain.mutate(chain)}
+                    >
+                      Rellenar con {chain.name}
+                    </Button>
+                  ) : null}
                   {item ? (
                     <button
                       type="button"
@@ -379,9 +469,22 @@ export default function PremiumPage() {
                 <p className="pt-1 text-[11px] text-muted-foreground">O solo con los modelos de un proveedor:</p>
                 <div className="flex flex-wrap gap-1">
                   {platforms.map(platform => (
-                    <Button key={platform} size="sm" variant="secondary" onClick={() => createChain.mutate({ name: platform, platform })}>
-                      {platform}
-                    </Button>
+                    <span key={platform} className="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5">
+                      <Button size="sm" variant="ghost" className="px-1" onClick={() => createChain.mutate({ name: platform, platform })}>
+                        {platform}
+                      </Button>
+                      <span className="text-[10px] text-muted-foreground">{modelCount(platform)} modelos</span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="px-1 text-[10px]"
+                        title="Pedir el catálogo al proveedor con su clave"
+                        disabled={importModels.isPending}
+                        onClick={() => importModels.mutate(platform)}
+                      >
+                        Importar
+                      </Button>
+                    </span>
                   ))}
                 </div>
               </>
@@ -389,6 +492,81 @@ export default function PremiumPage() {
           </div>
         </section>
       </div>
+
+
+      {/* ── % de uso por modelo ───────────────────────────────────────── */}
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold">Uso por modelo</h2>
+          <div className="flex items-center gap-1">
+            {(['day', 'month'] as const).map(option => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setUsageWindow(option)}
+                className={`rounded-md px-2 py-1 text-xs ${usageWindow === option ? 'bg-emerald-500/15 text-emerald-300' : 'text-muted-foreground'}`}
+              >
+                {option === 'day' ? 'Hoy' : '30 días'}
+              </button>
+            ))}
+            <Button size="sm" variant="ghost" onClick={() => usageQuery.refetch()}>
+              <RefreshCw className="size-3.5" /> Refrescar
+            </Button>
+          </div>
+        </div>
+        <div className="overflow-x-auto rounded-xl border">
+          <table className="w-full text-[12px]">
+            <thead className="bg-muted/30 text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2">Modelo</th>
+                <th className="px-3 py-2">Proveedor</th>
+                <th className="px-3 py-2 text-right">Peticiones</th>
+                <th className="px-3 py-2 text-right">Límite</th>
+                <th className="px-3 py-2 text-right">%</th>
+                <th className="px-3 py-2">Reinicio</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(usageQuery.data?.items ?? []).map(item => (
+                <tr key={`${item.platform}:${item.model}:${item.keyId}`} className="border-t">
+                  <td className="max-w-[260px] truncate px-3 py-1.5" title={item.model}>{item.model}</td>
+                  <td className="whitespace-nowrap px-3 py-1.5 text-muted-foreground">{item.platform} · #{item.keyId}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{item.used.toLocaleString()}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">
+                    {item.limit === null ? <span className="text-muted-foreground">sin límite</span> : item.limit.toLocaleString()}
+                  </td>
+                  <td className="px-3 py-1.5 text-right">
+                    {item.pct === null ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <span className={`inline-flex items-center gap-1 tabular-nums ${
+                        item.status === 'red' ? 'text-rose-400' : item.status === 'amber' ? 'text-amber-300' : 'text-emerald-400'
+                      }`}>
+                        <span className={`size-1.5 rounded-full ${
+                          item.status === 'red' ? 'bg-rose-400' : item.status === 'amber' ? 'bg-amber-300' : 'bg-emerald-400'
+                        }`} />
+                        {item.pct}%
+                      </span>
+                    )}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-1.5 text-muted-foreground">{item.resetAt ?? '—'}</td>
+                </tr>
+              ))}
+              {usageQuery.data && usageQuery.data.items.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
+                    Sin consumo registrado en esta ventana.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          «sin límite» = el proveedor no publica cuota para ese modelo; no se inventa un 0 %.
+          Code Assist (<code>gemini-cli</code>) y AI Studio (<code>google</code>) son contadores distintos y no se suman.
+        </p>
+      </section>
 
       {logFor !== null ? (() => {
         const item = availabilityFor(logFor)
@@ -425,8 +603,11 @@ export default function PremiumPage() {
                   <ul className="space-y-1 text-[12px]">
                     {list.map(model => (
                       <li key={`${model.platform}:${model.model}`} className="flex items-center justify-between gap-2 border-b border-border/40 py-1 last:border-0">
-                        <span className="truncate">{model.model}</span>
-                        <span className="shrink-0 text-[11px] text-muted-foreground">{model.platform}</span>
+                        <span className="truncate" title={model.model}>{model.model}</span>
+                        <span className="flex shrink-0 items-center gap-1">
+                          <span className="text-[11px] text-muted-foreground">{model.platform}</span>
+                          <CopyButton text={model.model} className="size-6" label={`Copiar ${model.model}`} />
+                        </span>
                       </li>
                     ))}
                   </ul>

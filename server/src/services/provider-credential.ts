@@ -1,5 +1,5 @@
 import { getDb } from '../db/index.js';
-import { decrypt } from '../lib/crypto.js';
+import { resolveKeySecret } from './gemini-oauth.js';
 import { reserveMonthlyBudget } from './key-budget.js';
 
 export interface ReservedProviderCredential {
@@ -11,6 +11,7 @@ export interface ReservedProviderCredential {
 
 interface KeyRow {
   id: number;
+  kind?: string | null;
   encrypted_key: string;
   iv: string;
   auth_tag: string;
@@ -29,7 +30,7 @@ export function reserveProviderCredential(
   if (row.platform === 'custom' && row.key_id == null) return { credential: null, budgetBlocked: false };
   const bound = row.key_id != null;
   const keys = getDb().prepare(`
-    SELECT id, encrypted_key, iv, auth_tag, base_url FROM api_keys
+    SELECT id, kind, encrypted_key, iv, auth_tag, base_url FROM api_keys
     WHERE ${bound ? 'id' : 'platform'} = ? AND enabled = 1
       AND status IN ('healthy', 'unknown') ORDER BY RANDOM()
   `).all(bound ? row.key_id : row.platform) as KeyRow[];
@@ -38,7 +39,7 @@ export function reserveProviderCredential(
     if (skip(keyRow.id)) continue;
     let key: string;
     try {
-      key = decrypt(keyRow.encrypted_key, keyRow.iv, keyRow.auth_tag);
+      key = resolveKeySecret(keyRow as any);
     } catch {
       continue;
     }

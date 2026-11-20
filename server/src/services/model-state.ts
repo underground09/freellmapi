@@ -146,7 +146,11 @@ export function isCatalogManagedModel(row: { platform: string; key_id?: number |
   // `source` is the authoritative provenance (models.source, 'catalog'|'user');
   // callers that select it get an exact answer. The platform/key_id fallback
   // covers callers that don't have the column in hand.
-  if (row.source === 'user') return false;
+  // 'provider' = importado del catálogo del propio proveedor (ver
+  // services/provider-model-import.ts). Tampoco es de catalog-sync, que sólo
+  // es dueño de lo que él mismo sembró ('catalog'): si no, el siguiente sync
+  // borraría los modelos de huggingface/ollama y la cadena volvería a 0/0.
+  if (row.source === 'user' || row.source === 'provider') return false;
   return row.platform !== 'custom' && row.key_id == null;
 }
 

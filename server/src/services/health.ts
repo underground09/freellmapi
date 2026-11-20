@@ -1,5 +1,6 @@
 import { getDb } from '../db/index.js';
 import { resolveProvider } from '../providers/index.js';
+import { resolveKeySecret } from './gemini-oauth.js';
 import { decrypt } from '../lib/crypto.js';
 import { decryptProxyUrl } from '../lib/key-proxy.js';
 import { withKeyProxy } from '../lib/proxy.js';
@@ -90,7 +91,7 @@ export async function checkKeyHealth(keyId: number): Promise<KeyStatus> {
   if (!provider) return 'error';
 
   try {
-    const apiKey = decrypt(row.encrypted_key, row.iv, row.auth_tag);
+    const apiKey = resolveKeySecret(row as any);
     // #590: probe the key from the same exit its traffic uses. A key that is
     // only reachable through its own proxy (the reason to set one) would
     // otherwise be validated direct, fail, and be auto-disabled after three
@@ -176,7 +177,7 @@ export async function probeKeyValidity(keyId: number): Promise<KeyProbeOutcome> 
     const provider = resolveProvider(row.platform as Platform, row.base_url);
     if (!provider) return 'error';
 
-    const apiKey = decrypt(row.encrypted_key, row.iv, row.auth_tag);
+    const apiKey = resolveKeySecret(row as any);
     // Same reasoning as checkKeyHealth: probe through the key's own proxy (#590).
     const validation = await withKeyProxy(decryptProxyUrl(row), () => provider.validateKey(apiKey, {
       platform: row.platform as Platform,

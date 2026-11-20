@@ -18,6 +18,7 @@ import {
   type KeyAccessStatus,
 } from '../services/key-access.js';
 import { resolveCustomEndpointKey, customEndpointKeyIds, siblingEndpointKeyId, endpointHasCredential } from '../services/custom-endpoint.js';
+import { importModelsForKey, importModelsForPlatform, ModelImportError } from '../services/provider-model-import.js';
 import { registerCustomModels, registerCustomChatModels } from '../services/custom-model-register.js';
 import { registerCustomMediaModel } from '../services/custom-media-register.js';
 import { discoverEndpointModels, probeEndpointModel, classifyModelId, ModelDiscoveryError } from '../services/model-discovery.js';
@@ -31,6 +32,19 @@ import { KEY_PROXY_URL_ERROR, KEY_PROXY_URL_MAX, decryptProxyUrl, encryptProxyUr
 
 export const keysRouter = Router();
 
+/** Respuesta de error uniforme para la importación de catálogos. */
+function respondImportError(res: Response, error: unknown): void {
+  if (error instanceof ModelImportError) {
+    res.status(error.status).json({
+      error: { message: error.message, type: 'import_models_failed', detail: error.detail ?? null },
+    });
+    return;
+  }
+  res.status(500).json({
+    error: { message: error instanceof Error ? error.message : String(error), type: 'import_models_failed' },
+  });
+}
+
 // Active providers — must match providers/index.ts registrations + shared/types.ts Platform.
 // Moonshot and MiniMax direct integrations were dropped in V4. HuggingFace
 // was dropped in V4 and re-added in V13 via the router.huggingface.co route.
@@ -41,7 +55,7 @@ const PLATFORMS = [
   'openrouter', 'github', 'cohere', 'cloudflare', 'zhipu', 'ollama',
   'kilo', 'pollinations', 'llm7', 'huggingface', 'opencode', 'ovh', 'agnes', 'reka', 'siliconflow',
   'routeway', 'bazaarlink', 'ainative', 'aion', 'anyapi', 'requesty', 'navy', 'nara', 'sealion', 'orcarouter', 'unorouter', 'xkiro', 'modelscope',
-  'qianfan', 'volcengine', 'longcat', 'xfyun', 'aihorde', 'custom',
+  'qianfan', 'volcengine', 'longcat', 'xfyun', 'aihorde', 'custom', 'gemini-cli', 'antigravity',
 ] as const;
 
 const ALLOWED_IMPORT_EXTENSIONS = new Set(['.env', '.json', '.jsonc', '.md', '.txt', '.csv']);
@@ -316,7 +330,11 @@ keysRouter.get('/', (_req: Request, res: Response) => {
     let realKey = '';
     try {
       realKey = decrypt(row.encrypted_key, row.iv, row.auth_tag);
-      maskedKey = maskKey(realKey);
+      // Una clave OAuth no es un secreto pegable: enseñar el JSON cifrado tal
+      // cual ({"ac...) no informa de nada. Se resume la procedencia.
+      maskedKey = row.kind === 'oauth'
+        ? `oauth · ${row.oauth_provider ?? 'google'}`
+        : maskKey(realKey);
     } catch {
       maskedKey = '[decrypt failed]';
     }
@@ -340,7 +358,9 @@ keysRouter.get('/', (_req: Request, res: Response) => {
       statusReason: (row as any).status_reason ?? null,
       keyless: resolveProvider(row.platform)?.keyless === true,
       // Lets the export dialog count exactly what the export will write.
-      exportable: isExportableKey({ platform: row.platform, baseUrl: row.base_url ?? null, key: realKey }),
+      exportable: row.kind === 'oauth'
+        ? false
+        : isExportableKey({ platform: row.platform, baseUrl: row.base_url ?? null, key: realKey }),
       createdAt: row.created_at,
       lastCheckedAt: row.last_checked_at,
       lastHealthError: row.last_health_error ?? null,
@@ -428,7 +448,10 @@ keysRouter.get('/export', (req: Request, res: Response) => {
     whereClause = "WHERE status = 'healthy'";
   }
 
-  const rows = db.prepare(`SELECT * FROM api_keys ${whereClause} ORDER BY platform, created_at ASC`).all() as any[];
+  // Las claves OAuth (kind='oauth') quedan fuera del export: su valor cifrado es
+  // un JSON de tokens y el fichero exportado va en claro.
+  const rows = (db.prepare(`SELECT * FROM api_keys ${whereClause} ORDER BY platform, created_at ASC`).all() as any[])
+    .filter(row => row.kind !== 'oauth');
 
   // Decrypt and filter — only export keys with a real value
   const decryptedKeys = rows
@@ -1673,4 +1696,38 @@ keysRouter.post('/:id/access', (req: Request, res: Response) => {
     kind: row.kind ?? 'api-key',
     oauthProvider: row.oauth_provider ?? null,
   });
+});
+
+// ── Importar el catálogo del proveedor a `models` ───────────────────────────
+// El catálogo firmado (instantánea mensual) no cubre a todos los proveedores
+// registrados: huggingface y ollama se quedan sin filas y sus cadenas salen
+// 0/0. Aquí se le pide la lista al proveedor con SU clave y se guarda en
+// `models` (source='provider'), de forma idempotente.
+keysRouter.post('/import-models', async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as { platform?: unknown };
+  const platform = typeof body.platform === 'string' ? body.platform.trim() : '';
+  if (!platform) {
+    res.status(400).json({ error: { message: 'falta platform', type: 'invalid_request' } });
+    return;
+  }
+  try {
+    const result = await importModelsForPlatform(platform as Platform);
+    res.json(result);
+  } catch (error) {
+    respondImportError(res, error);
+  }
+});
+
+keysRouter.post('/:id/import-models', async (req: Request, res: Response) => {
+  const keyId = Number(req.params.id);
+  if (!Number.isInteger(keyId) || keyId <= 0) {
+    res.status(400).json({ error: { message: 'id invalido', type: 'invalid_request' } });
+    return;
+  }
+  try {
+    const result = await importModelsForKey(keyId);
+    res.json(result);
+  } catch (error) {
+    respondImportError(res, error);
+  }
 });
