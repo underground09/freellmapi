@@ -215,7 +215,7 @@ async function fetchCatalog(platform: Platform, row: KeyRow, apiKey: string): Pr
           Authorization: `Bearer ${secret.accessToken ?? ''}`,
           'Content-Type': 'application/json',
           // 4.2.0: con 2.1.1 el catálogo vuelve corto y el streaming da el cartel
-          'User-Agent': process.env.ANTIGRAVITY_UA ?? 'antigravity/ide/4.2.0 darwin/arm64',
+          'User-Agent': process.env.ANTIGRAVITY_UA ?? 'antigravity/hub/2.24.0 darwin/arm64',
           'x-request-source': 'local',
         },
         body: JSON.stringify({ project: secret.projectId ?? '' }),
