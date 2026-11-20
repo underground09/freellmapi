@@ -45,6 +45,10 @@ export interface SettingsRailProps {
   /** Model picker, moved here from the page header. */
   modelValue: string
   modelOptions: ModelComboOption[]
+  /** Filtro por enrutamiento: '' = todos. */
+  chainOptions?: ModelComboOption[]
+  chainValue?: string
+  onSelectChain?: (value: string) => void
   onSelectModel: (value: string) => void
   /** Shown under the picker when no platform has an enabled key yet. */
   noModels: boolean
@@ -136,6 +140,9 @@ export function SettingsRail({
   onToggle,
   modelValue,
   modelOptions,
+  chainOptions,
+  chainValue,
+  onSelectChain,
   onSelectModel,
   dictationValue,
   dictationOptions,
@@ -194,6 +201,22 @@ export function SettingsRail({
         </div>
 
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-3">
+          {chainOptions && chainOptions.length > 0 && onSelectChain ? (
+            <div className="space-y-1.5">
+              <span className="block text-xs font-medium">Enrutamiento</span>
+              <ModelCombobox
+                value={chainValue ?? ''}
+                options={chainOptions}
+                onSelect={onSelectChain}
+                ariaLabel="Filtrar por enrutamiento"
+                placeholder="Buscar enrutamiento…"
+                emptyText="Sin enrutamientos"
+                align="end"
+                triggerClassName="flex h-8 w-full items-center justify-between gap-2 whitespace-nowrap rounded-lg border border-input bg-transparent px-3 text-sm outline-none transition-colors hover:bg-muted/50 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+              />
+            </div>
+          ) : null}
+
           <div className="space-y-1.5">
             <span className="block text-xs font-medium">{t('common.model')}</span>
             <ModelCombobox

@@ -104,7 +104,7 @@ export function ModelCombobox({
         <span className={`truncate ${triggerLabel ? '' : 'text-muted-foreground'}`} title={triggerLabel || undefined}>{triggerLabel || triggerPlaceholder}</span>
         <ChevronsUpDown className="size-4 shrink-0 text-muted-foreground" />
       </PopoverTrigger>
-      <PopoverContent align={align} className="w-[300px] p-0" onKeyDown={onKeyDown}>
+      <PopoverContent align={align} className="w-[440px] max-w-[calc(100vw-24px)] p-0" onKeyDown={onKeyDown}>
         <div className="flex items-center gap-2 border-b px-3">
           <Search className="size-4 shrink-0 text-muted-foreground" />
           <input
@@ -135,7 +135,7 @@ export function ModelCombobox({
                 }`}
               >
                 <Check className={`size-4 shrink-0 ${o.value === value ? 'opacity-100' : 'opacity-0'}`} />
-                <span className={`min-w-0 flex-1 truncate ${o.note ? 'opacity-50' : ''}`} title={o.label}>{o.label}</span>
+                <span className={`min-w-0 flex-1 break-all line-clamp-2 leading-snug ${o.note ? 'opacity-50' : ''}`} title={o.label}>{o.label}</span>
                 {o.note && (
                   <span className="rounded px-1 py-0.5 text-[9px] font-semibold uppercase leading-none tracking-wide bg-amber-500/15 text-amber-600 dark:text-amber-400">
                     {o.note}

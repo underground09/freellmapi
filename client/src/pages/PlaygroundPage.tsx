@@ -222,6 +222,9 @@ export default function PlaygroundPage() {
   const [selectedModel, setSelectedModel] = useState<string>(
     () => localStorage.getItem('playground.model') ?? 'auto',
   )
+
+  // Segundo desplegable del riel: filtra los modelos por enrutamiento.
+  const [chainFilter, setChainFilter] = useState<string>('')
   // Files staged for the NEXT message: images already downscaled to a data URI,
   // text-like files already decoded. Cleared on send. (#325)
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -386,7 +389,8 @@ export default function PlaygroundPage() {
   // prueba el enrutamiento (auto:<cadena>) y, dentro de él, un modelo concreto
   // sin salir del Playground.
   const selectedChainName = selectedModel.startsWith('auto:') ? selectedModel.slice(5) : null
-  const selectedChain = chains.find(c => c.name.toLowerCase() === selectedChainName)
+  const filterChain = chainFilter ? chains.find(c => String(c.id) === chainFilter) : undefined
+  const selectedChain = filterChain ?? chains.find(c => c.name.toLowerCase() === selectedChainName)
   const { data: chainAvailability } = useQuery<{
     chainId: number
     models: { model: string; platform: string; available: boolean }[]
@@ -940,7 +944,14 @@ export default function PlaygroundPage() {
   // ordered BY INTELLIGENCE — size tier first (Frontier→Small), then the catalog
   // rank within the tier, name as the final tiebreaker. (Raw intelligence_rank is
   // per-provider, not global, so tier-first matches the server's preset; #135.)
-  const pickerOptions = [
+  // Opciones del desplegable de enrutamiento: "Todos" + cada cadena con su
+  // número de modelos. Al elegir una, el selector de modelo sólo muestra esa
+  // cadena y sus miembros.
+  const chainFilterOptions = [
+    { value: '', label: 'Todos los modelos', sub: '', isNew: false, platforms: [] as string[] },
+    ...chainOptions,
+  ]
+  const basePickerOptions = [
     { value: 'auto', label: t('playground.autoModel'), sub: '', isNew: false, platforms: [] as string[] },
     { value: 'fusion', label: t('playground.fusionModel'), sub: '', isNew: false, platforms: [] as string[] },
     ...chainOptions,
@@ -965,6 +976,13 @@ export default function PlaygroundPage() {
           : undefined,
       })),
   ]
+  const pickerOptions = chainFilter
+    ? basePickerOptions.filter(o =>
+        o.value === 'auto' || o.value === 'fusion' ||
+        o.value === `auto:${filterChain?.name.toLowerCase()}` ||
+        chainMemberOptions.some(member => member.value === o.value),
+      )
+    : basePickerOptions
   function pickModel(v: string) {
     setSelectedModel(v)
     localStorage.setItem('playground.model', v)
@@ -1253,6 +1271,9 @@ export default function PlaygroundPage() {
         onToggle={toggleSettings}
         modelValue={selectedModel}
         modelOptions={pickerOptions}
+        chainOptions={chainFilterOptions}
+        chainValue={chainFilter}
+        onSelectChain={setChainFilter}
         onSelectModel={pickModel}
         noModels={availableModels.length === 0}
         dictationValue={dictationModel}
