@@ -115,26 +115,24 @@ function notFound(res: Response): void {
   res.status(404).json({ error: { message: 'Client profile not found' } });
 }
 
-// Disponibilidad real de una cadena: modelos activos cuyo proveedor tiene al
-// menos una clave en circulación y que no están en cooldown. Barato y honesto:
-// no inventa un ping que no se ha hecho.
-const AVAILABILITY_SQL = `
-  SELECT COUNT(*) AS total,
-         SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END) AS available
-  FROM (
-    SELECT m.id,
-           CASE WHEN EXISTS (
-             SELECT 1 FROM api_keys k
-              WHERE k.platform = m.platform AND k.enabled = 1
-                AND k.status IN ('healthy', 'unknown')
-           ) AND NOT EXISTS (
-             SELECT 1 FROM rate_limit_cooldowns c
-              WHERE c.model_id = m.model_id AND c.expires_at_ms > (strftime('%s','now') * 1000)
-           ) THEN 1 ELSE 0 END AS ok
-      FROM profile_models pm
-      JOIN models m ON m.id = pm.model_db_id
-     WHERE pm.profile_id = ? AND pm.enabled = 1 AND m.enabled = 1
-  )`;
+// Disponibilidad real de una cadena, con la lista de modelos: modelos activos
+// cuyo proveedor tiene al menos una clave en circulación y que no están en
+// cooldown. Sin salir a internet: es estado real del gateway, no un ping falso.
+const AVAILABILITY_ROWS_SQL = `
+  SELECT m.model_id AS model,
+         m.platform AS platform,
+         CASE WHEN EXISTS (
+           SELECT 1 FROM api_keys k
+            WHERE k.platform = m.platform AND k.enabled = 1
+              AND k.status IN ('healthy', 'unknown')
+         ) AND NOT EXISTS (
+           SELECT 1 FROM rate_limit_cooldowns c
+            WHERE c.model_id = m.model_id AND c.expires_at_ms > (strftime('%s','now') * 1000)
+         ) THEN 1 ELSE 0 END AS ok
+    FROM profile_models pm
+    JOIN models m ON m.id = pm.model_db_id
+   WHERE pm.profile_id = ? AND pm.enabled = 1 AND m.enabled = 1
+   ORDER BY m.platform, m.model_id`;
 
 clientProfilesRouter.get('/chains/:id/availability', (req: Request, res: Response) => {
   const chainId = Number(req.params.id);
@@ -142,10 +140,23 @@ clientProfilesRouter.get('/chains/:id/availability', (req: Request, res: Respons
     res.status(400).json({ error: { message: 'id invalido', type: 'invalid_request' } });
     return;
   }
-  const row = getDb().prepare(AVAILABILITY_SQL).get(chainId) as { total: number; available: number | null };
-  const total = Number(row?.total ?? 0);
-  const available = Number(row?.available ?? 0);
-  res.json({ chainId, total, available, unavailable: total - available, checkedAt: new Date().toISOString() });
+
+  const rows = getDb().prepare(AVAILABILITY_ROWS_SQL).all(chainId) as { model: string; platform: string; ok: number }[];
+  const models = rows.map(row => ({
+    model: row.model,
+    platform: row.platform,
+    available: row.ok === 1,
+  }));
+  const available = models.filter(model => model.available).length;
+
+  res.json({
+    chainId,
+    total: models.length,
+    available,
+    unavailable: models.length - available,
+    models,
+    checkedAt: new Date().toISOString(),
+  });
 });
 
 // Crear un enrutamiento (cadena). Con `platform` se rellena solo con los

@@ -27,11 +27,18 @@ interface Chain {
   api_count: number
 }
 
+interface AvailabilityModel {
+  model: string
+  platform: string
+  available: boolean
+}
+
 interface Availability {
   chainId: number
   total: number
   available: number
   unavailable: number
+  models: AvailabilityModel[]
   checkedAt: string
 }
 
@@ -44,6 +51,8 @@ export default function PremiumPage() {
   const [selected, setSelected] = useState<number | null>(null)
   const [rotated, setRotated] = useState<Record<number, boolean>>({})
   const [avail, setAvail] = useState<Record<number, Availability>>({})
+  const [logFor, setLogFor] = useState<number | null>(null)
+  const [logTab, setLogTab] = useState<'up' | 'down'>('up')
 
   const apisQuery = useQuery<ServiceApi[]>({
     queryKey: ['service-apis'],
@@ -340,11 +349,16 @@ export default function PremiumPage() {
                   </div>
                   <p className="text-[11px] text-muted-foreground">{chain.model_count} modelos</p>
                   {item ? (
-                    <p className="text-[11px]">
+                    <button
+                      type="button"
+                      className="text-[11px] underline decoration-dotted"
+                      onClick={() => { setLogFor(chain.id); setLogTab('up') }}
+                    >
                       <span className="text-emerald-400">{item.available}</span>
                       {' / '}
                       <span className="text-rose-400">{item.unavailable}</span>
-                    </p>
+                      <span className="text-muted-foreground"> · ver log</span>
+                    </button>
                   ) : null}
                 </div>
               )
@@ -375,6 +389,53 @@ export default function PremiumPage() {
           </div>
         </section>
       </div>
+
+      {logFor !== null ? (() => {
+        const item = availabilityFor(logFor)
+        const list = (item?.models ?? []).filter(model => (logTab === 'up' ? model.available : !model.available))
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setLogFor(null)}>
+            <div className="max-h-[80vh] w-full max-w-lg overflow-hidden rounded-xl border bg-background" onClick={event => event.stopPropagation()}>
+              <div className="flex items-center justify-between border-b px-4 py-3">
+                <p className="text-sm font-semibold">Log · {chainName(logFor)}</p>
+                <button type="button" aria-label="Cerrar" onClick={() => setLogFor(null)}>
+                  <X className="size-4 text-muted-foreground" />
+                </button>
+              </div>
+              <div className="flex gap-1 border-b px-3 py-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setLogTab('up')}
+                  className={`rounded-md px-2 py-1 ${logTab === 'up' ? 'bg-emerald-500/15 text-emerald-300' : 'text-muted-foreground'}`}
+                >
+                  Disponibles ({item?.available ?? 0})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLogTab('down')}
+                  className={`rounded-md px-2 py-1 ${logTab === 'down' ? 'bg-rose-500/15 text-rose-300' : 'text-muted-foreground'}`}
+                >
+                  No disponibles ({item?.unavailable ?? 0})
+                </button>
+              </div>
+              <div className="max-h-[55vh] overflow-y-auto px-4 py-2">
+                {list.length === 0 ? (
+                  <p className="py-6 text-center text-xs text-muted-foreground">Sin modelos en esta pestaña.</p>
+                ) : (
+                  <ul className="space-y-1 text-[12px]">
+                    {list.map(model => (
+                      <li key={`${model.platform}:${model.model}`} className="flex items-center justify-between gap-2 border-b border-border/40 py-1 last:border-0">
+                        <span className="truncate">{model.model}</span>
+                        <span className="shrink-0 text-[11px] text-muted-foreground">{model.platform}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })() : null}
     </div>
   )
 }
