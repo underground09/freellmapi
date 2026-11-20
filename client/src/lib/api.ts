@@ -4,8 +4,14 @@
 // once here: the injected script always runs before this bundle.
 export function getBasePath(): string {
   const injected = (window as unknown as { __FREELMAPI_BASE__?: string }).__FREELMAPI_BASE__
-  const base = injected && injected.trim() ? injected.trim() : import.meta.env.BASE_URL
-  return base.replace(/\/+$/, '')
+  if (injected && injected.trim()) return injected.trim().replace(/\/+$/, '')
+  // No injection (proxy added it to a cached copy, or the page was served
+  // plainly): derive the prefix from where the dashboard was actually loaded,
+  // so /api/* never escapes to the domain root where the panel session is not
+  // visible to the gateway.
+  const path = window.location.pathname.replace(/\/+$/, '')
+  if (/\/admin\/herramientas\/gateway\/freellmapi$/.test(path)) return path
+  return import.meta.env.BASE_URL.replace(/\/+$/, '')
 }
 
 const BASE = getBasePath();
