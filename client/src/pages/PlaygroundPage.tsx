@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronRight, CircleAlert, FileText, X } from 'lucide-react'
-import { apiFetch } from '@/lib/api'
+import { apiFetch, getBasePath } from '@/lib/api'
 import { buildModelOptions } from '@/lib/model-groups'
 import type { Chain } from '@/components/chain-manager'
 import { Markdown } from '@/components/markdown'
@@ -841,7 +841,11 @@ export default function PlaygroundPage() {
       const controller = new AbortController()
       abortRef.current = controller
 
-      const base = import.meta.env.BASE_URL.replace(/\/$/, '')
+      // NO usar import.meta.env.BASE_URL: es '/' en el build, así que en el
+      // panel la petición salía a https://core-under.com/v1/... (raíz) y Laravel
+      // devolvía 404. getBasePath() sí resuelve el prefijo del proxy
+      // (/admin/herramientas/gateway/freellmapi) o el inyectado.
+      const base = getBasePath()
       const start = Date.now()
       const res = await fetch(`${base}/v1/chat/completions`, {
         method: 'POST',
@@ -949,7 +953,18 @@ export default function PlaygroundPage() {
   // cadena y sus miembros.
   const chainFilterOptions = [
     { value: '', label: 'Todos los modelos', sub: '', isNew: false, platforms: [] as string[] },
-    ...chainOptions,
+    // El valor es el ID de la cadena: el filtro lo compara con `c.id` para
+    // resolver sus miembros (antes guardaba `auto:nombre` y nunca casaba).
+    ...chains.map(chain => {
+      const stats = chainStats.find(entry => entry.name === chain.name)
+      return {
+        value: String(chain.id),
+        label: `⚡ ${chain.name}${stats ? ` · ${stats.model_count} modelos` : ''}`,
+        sub: '',
+        isNew: false,
+        platforms: [] as string[],
+      }
+    }),
   ]
   const basePickerOptions = [
     { value: 'auto', label: t('playground.autoModel'), sub: '', isNew: false, platforms: [] as string[] },
