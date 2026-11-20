@@ -52,7 +52,7 @@ export default function ConsumoPage() {
   const [win, setWin] = useState<'day' | 'month'>('day')
   const q = useQuery({
     queryKey: ['consumo', win],
-    queryFn: () => apiFetch<UsageResponse>(`/api/usage/by-model?window=${win}`),
+    queryFn: () => apiFetch<UsageResponse>(`/api/usage/by-model?window=${win}&all=1`),
     refetchInterval: 60000,
   })
 

@@ -98,6 +98,7 @@ usageRouter.get('/by-model', (req: Request, res: Response) => {
      LIMIT 1
   `);
 
+  const allModels = String((req.query as Record<string, unknown>).all ?? '') === '1';
   const items = rows.map(row => {
     const model = modelLimits.get(row.platform, row.model_id) as ModelLimits | undefined;
     const poolKey = `${row.platform}::${row.model_id}`;
@@ -139,6 +140,44 @@ usageRouter.get('/by-model', (req: Request, res: Response) => {
       limitSource: quota?.limit_value != null ? 'provider_quota_state' : (catalogLimit != null ? 'catalog' : null),
     };
   });
+
+  // Con ?all=1 se añaden los modelos que tienen cuota registrada aunque hoy no
+  // tengan actividad, para ver su reinicio y su porcentaje real.
+  if (allModels) {
+    const conCuota = db
+      .prepare(
+        `SELECT m.model_id AS model, q.key_id AS keyId, q.remaining_value AS remaining,
+                q.reset_at AS resetAt, q.reset_strategy AS strat
+           FROM models m
+           JOIN provider_quota_state q
+             ON q.quota_pool_key = m.platform || '::' || m.model_id
+          WHERE m.platform = 'antigravity' AND m.enabled = 1
+          GROUP BY m.model_id`,
+      )
+      .all() as Array<{ model: string; keyId: number; remaining: number | null; resetAt: string | null; strat: string | null }>;
+
+    for (const c of conCuota) {
+      if (items.some((i) => i.model === c.model)) continue;
+      const pct = c.remaining == null ? null : Math.max(0, Math.round((100 - Number(c.remaining)) * 10) / 10);
+      const scope = c.strat === 'weekly' ? 'S' : c.strat === 'daily' ? 'D' : null;
+      items.push({
+        model: c.model,
+        platform: 'antigravity',
+        keyId: c.keyId ?? 6,
+        window,
+        used: 0,
+        tokens: 0,
+        limit: 100,
+        remaining: c.remaining == null ? null : Number(c.remaining),
+        pct,
+        resetAt: c.resetAt,
+        scope,
+        lastUsedAt: null,
+        status: thresholds(pct),
+        limitSource: 'provider_quota_state',
+      } as (typeof items)[number]);
+    }
+  }
 
   res.json({
     window,
