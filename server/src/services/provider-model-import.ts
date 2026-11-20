@@ -209,12 +209,13 @@ async function fetchCatalog(platform: Platform, row: KeyRow, apiKey: string): Pr
     // La lista real (con cuota y reset) la publica el propio Code Assist.
     try {
       const secret = JSON.parse(apiKey) as { accessToken?: string; projectId?: string };
-      const res = await fetch('https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', {
+      const res = await fetch('https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${secret.accessToken ?? ''}`,
           'Content-Type': 'application/json',
-          'User-Agent': 'antigravity/ide/2.1.1 darwin/arm64',
+          // 4.2.0: con 2.1.1 el catálogo vuelve corto y el streaming da el cartel
+          'User-Agent': process.env.ANTIGRAVITY_UA ?? 'antigravity/ide/4.2.0 darwin/arm64',
           'x-request-source': 'local',
         },
         body: JSON.stringify({ project: secret.projectId ?? '' }),
@@ -234,7 +235,7 @@ async function fetchCatalog(platform: Platform, row: KeyRow, apiKey: string): Pr
             supportsTools: true,
           }));
         if (models.length > 0) {
-          return { models, url: 'https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels' };
+          return { models, url: 'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels' };
         }
       }
     } catch {
