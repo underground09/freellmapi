@@ -174,8 +174,13 @@ clientProfilesRouter.post('/chains', (req: Request, res: Response) => {
     const models = db.prepare('SELECT id FROM models WHERE platform = ? AND enabled = 1 ORDER BY intelligence_rank ASC').all(platform) as { id: number }[];
     const insert = db.prepare('INSERT OR IGNORE INTO profile_models (profile_id, model_db_id, priority, enabled) VALUES (?, ?, ?, 1)');
     models.forEach((model, index) => insert.run(chainId, model.id, index));
+    // El alta de una cadena en FreeLLMAPI siembra TODOS los modelos del catalogo.
+    // Aqui se recorta a la plataforma pedida y se apaga el auto-include, que es
+    // lo que el panel promete cuando dice "solo con los modelos de nvidia".
+    db.prepare('DELETE FROM profile_models WHERE profile_id = ? AND model_db_id NOT IN (SELECT id FROM models WHERE platform = ?)').run(chainId, platform);
     modelCount = models.length;
   }
+  db.prepare('UPDATE profiles SET auto_include_new_models = 0 WHERE id = ?').run(chainId);
 
   res.status(201).json({ id: chainId, name, model_count: modelCount, api_count: 0 });
 });
