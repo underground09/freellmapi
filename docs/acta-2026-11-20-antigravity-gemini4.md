@@ -128,3 +128,35 @@ curl -s -X POST https://daily-cloudcode-pa.googleapis.com/v1internal:streamGener
        "userAgent":"antigravity","request":{"contents":[{"role":"user","parts":[{"text":"hola"}]}]}}'
 # con UA=antigravity/ide/4.2.0  -> 404 ;  con UA=.../hub/2.24.0 -> 200
 ```
+
+
+---
+
+## 9. Cuota real por modelo (medida con el UA hub, 20-11-2026 17:11Z)
+
+`fetchAvailableModels` con `User-Agent: antigravity/hub/2.24.0` devuelve **36 modelos**
+(33 útiles) y, por cada uno, `quotaInfo.remainingFraction` y `resetTime`:
+
+| Familia | Restante | Reset | Estrategia |
+|---|---|---|---|
+| **gemini-4-argon-high / medium / low** | **75,41 %** | **2026-11-25T14:29:45Z** | **SEMANAL** ⚠️ |
+| gemini-4-neon-high / medium / low / xhigh | 99,73 % | 2026-11-20T17:41:58Z | diaria |
+| gemini-4-hydrogen-high / medium / low / xhigh | 99,73 % | 2026-11-20T17:41:58Z | diaria |
+| gemini-4-hydrogen-sonar / -tiered-high / -tiered-xhigh | 99,73 % | 2026-11-20T17:41:58Z | diaria |
+| gemini-4-carbon-disabled | — | — | deshabilitado por Google |
+
+`maxTokens` de toda la familia Gemini 4: **1.048.576**.
+
+**Consecuencia práctica:** Argon se agota **por semana**, no por día. Las pruebas de
+hoy consumieron ~25 % de su cuota semanal. Neon y Hydrogen se renuevan a diario.
+
+### Nota de arquitectura (intento fallido, documentado)
+Se intentó reflejar la cuota por modelo en el panel insertando filas en
+`provider_quota_state` (`quota_pool_key = antigravity::<modelo>`). **El panel no las usa
+por modelo**: `GET /api/usage/by-model` resuelve la cuota por `platform + key_id`, así
+que el 75,41 % de Argon aparecía en **todos** los modelos de antigravity. Las filas se
+**borraron** para no mostrar datos falsos.
+
+Para tener % real por modelo en el panel hace falta que `routes/usage.ts` cruce
+`provider_quota_state.quota_pool_key` con el id del modelo (sufijo `::<modelId>`) en vez
+de por plataforma. Queda como mejora pendiente.
