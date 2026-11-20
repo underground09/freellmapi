@@ -85,6 +85,38 @@ function notFound(res: Response): void {
   res.status(404).json({ error: { message: 'Client profile not found' } });
 }
 
+// Crear un enrutamiento (cadena). Con `platform` se rellena solo con los
+// modelos activos de ese proveedor, que es el caso de uso del panel: "quiero un
+// enrutamiento que sólo sea nvidia" en un clic.
+clientProfilesRouter.post('/chains', (req: Request, res: Response) => {
+  const db = getDb();
+  const body = (req.body ?? {}) as { name?: unknown; platform?: unknown };
+  const name = typeof body.name === 'string' ? body.name.trim() : '';
+  const platform = typeof body.platform === 'string' && body.platform.trim() ? body.platform.trim() : null;
+
+  if (!name || name.length > 100) {
+    res.status(400).json({ error: { message: 'El nombre del enrutamiento es obligatorio (máx. 100)', type: 'invalid_request' } });
+    return;
+  }
+  if (db.prepare('SELECT id FROM profiles WHERE name = ?').get(name)) {
+    res.status(409).json({ error: { message: 'Ya existe un enrutamiento con ese nombre', type: 'name_taken' } });
+    return;
+  }
+
+  const info = db.prepare("INSERT INTO profiles (name, type) VALUES (?, 'custom')").run(name);
+  const chainId = Number(info.lastInsertRowid);
+
+  let modelCount = 0;
+  if (platform) {
+    const models = db.prepare('SELECT id FROM models WHERE platform = ? AND enabled = 1 ORDER BY intelligence_rank ASC').all(platform) as { id: number }[];
+    const insert = db.prepare('INSERT OR IGNORE INTO profile_models (profile_id, model_db_id, priority, enabled) VALUES (?, ?, ?, 1)');
+    models.forEach((model, index) => insert.run(chainId, model.id, index));
+    modelCount = models.length;
+  }
+
+  res.status(201).json({ id: chainId, name, model_count: modelCount, api_count: 0 });
+});
+
 // Cadenas de enrutamiento disponibles para atar una API de servicio. Es la
 // lista corta a propósito: varias APIs pueden compartir la misma cadena, así
 // que se crean menos grupos que APIs.
