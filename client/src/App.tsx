@@ -44,6 +44,8 @@ import LogsPage from '@/pages/LogsPage'
 import PremiumPage from '@/pages/PremiumPage'
 import NotFoundPage from '@/pages/NotFoundPage'
 import AgentsPage from '@/pages/AgentsPage'
+import McpPage from '@/pages/McpPage'
+import TranslatePage from '@/pages/TranslatePage'
 
 // Every failed mutation surfaces as an error toast, so no action fails
 // silently. A page that already shows the failure inline can opt out with
@@ -66,13 +68,19 @@ const queryClient = new QueryClient({
   }),
 })
 
-const navItems = [
+// `labelKey` for the translated entries, `label` for the ones that ship with a
+// single Spanish name (no locale churn for a page that only exists here).
+type NavEntry = { to: string; labelKey?: string; label?: string }
+
+const navItems: NavEntry[] = [
   { to: '/models', labelKey: 'nav.models' },
   { to: '/playground', labelKey: 'nav.playground' },
   { to: '/keys', labelKey: 'nav.keys' },
   { to: '/agents', labelKey: 'nav.agents' },
+  { to: '/traduccion', label: 'Traducción' },
   { to: '/analytics', labelKey: 'nav.analytics' },
   { to: '/premium', labelKey: 'nav.premium' },
+  { to: '/mcp-config', label: 'MCP' },
 ]
 
 // The modality pages behind "Models"; surfaced in the nav dropdown and
@@ -123,10 +131,10 @@ function NavItem({ to, children }: { to: string; children: React.ReactNode }) {
     <NavLink
       to={to}
       className={({ isActive }) =>
-        `relative text-sm px-1 py-4 transition-colors ${
+        `relative text-sm px-1 py-4 transition-colors md:w-full md:rounded-md md:px-2.5 md:py-1.5 md:text-[13px] ${
           isActive
-            ? 'text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-px after:bg-foreground'
-            : 'text-muted-foreground hover:text-foreground'
+            ? 'text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-px after:bg-foreground md:bg-accent md:after:hidden'
+            : 'text-muted-foreground hover:text-foreground md:hover:bg-accent/60'
         }`
       }
     >
@@ -235,6 +243,7 @@ function Navbar() {
   const [credentialsMode, setCredentialsMode] = useState<'password' | 'email' | null>(null)
   const { data: premium, licensed, isLoading: premiumLoading, isError: premiumError } = usePremium()
   const showUpgrade = Boolean(premium) && !licensed && !premiumLoading && !premiumError
+  const labelOf = (item: NavEntry) => item.label ?? (item.labelKey ? t(item.labelKey) : item.to)
 
   return (
     <>
@@ -242,18 +251,19 @@ function Navbar() {
         // In macOS desktop shell the window carries vibrancy blur, so a lighter wash (45%)
         // lets it read as glass. Everywhere else (Windows/Linux/browser), use solid wash (80%)
         // so text and contrast stay sharp and readable.
-        className={`sticky top-0 z-40 border-b backdrop-blur ${isMacDesktop ? 'bg-background/45' : 'bg-background/80'}`}
+        // md+: fixed left rail like 9Router; the shell reserves the width (md:pl-60).
+        className={`sticky top-0 z-40 border-b backdrop-blur md:fixed md:inset-y-0 md:left-0 md:w-60 md:border-b-0 md:border-r ${isMacDesktop ? 'bg-background/45' : 'bg-background/80'}`}
         style={isDesktopApp ? ({ WebkitAppRegion: 'drag' } as React.CSSProperties) : undefined}
       >
         <div
           // Physical pl: reserves macOS traffic lights only on macOS. On Windows and Linux,
           // standard window controls sit on the top-right, so no left padding is needed.
-          className={`mx-auto flex max-w-6xl items-center px-4 sm:px-6 ${isMacDesktop ? 'pl-20 sm:pl-20' : ''}`}
+          className={`mx-auto flex max-w-6xl items-center px-4 sm:px-6 md:mx-0 md:h-full md:max-w-none md:flex-col md:items-stretch md:gap-1 md:px-3 md:py-4 ${isMacDesktop ? 'pl-20 sm:pl-20' : ''}`}
           style={isMacDesktop ? { minHeight: 52 } : undefined}
         >
           <Brand />
           <nav
-            className="ms-10 hidden items-center gap-6 md:flex"
+            className="ms-10 hidden items-center gap-6 md:ms-0 md:mt-5 md:flex md:flex-col md:items-stretch md:gap-0.5"
             style={isDesktopApp ? ({ WebkitAppRegion: 'no-drag' } as React.CSSProperties) : undefined}
           >
             {navItems.map((item) => {
@@ -262,7 +272,7 @@ function Navbar() {
                 // Split control: the label navigates, the chevron reveals the
                 // pages hiding behind it.
                 <div key={item.to} className="flex items-center gap-0.5">
-                  <NavItem to={item.to}>{t(item.labelKey)}</NavItem>
+                  <NavItem to={item.to}>{labelOf(item)}</NavItem>
                   <DropdownMenu>
                     <DropdownMenuTrigger
                       aria-label={t(menu.ariaKey)}
@@ -281,13 +291,13 @@ function Navbar() {
                 </div>
               ) : (
                 <NavItem key={item.to} to={item.to}>
-                  {t(item.labelKey)}
+                  {labelOf(item)}
                 </NavItem>
               )
             })}
           </nav>
           <div
-            className="ms-auto hidden items-center gap-1 md:flex"
+            className="ms-auto hidden items-center gap-1 md:ms-0 md:mt-auto md:flex"
             style={isDesktopApp ? ({ WebkitAppRegion: 'no-drag' } as React.CSSProperties) : undefined}
           >
             <ThemeToggle label={t('palette.toggleTheme')} />
@@ -340,7 +350,7 @@ function Navbar() {
                         <DropdownMenuSubTrigger
                           className={menu.isActive(location.pathname) ? 'bg-accent text-accent-foreground font-medium' : undefined}
                         >
-                          {t(item.labelKey)}
+                          {labelOf(item)}
                         </DropdownMenuSubTrigger>
                         <DropdownMenuSubContent>
                           {menu.items.map((entry) => (
@@ -356,7 +366,7 @@ function Navbar() {
                         onClick={() => navigate(item.to)}
                         className={location.pathname === item.to ? 'bg-accent text-accent-foreground font-medium' : undefined}
                       >
-                        {t(item.labelKey)}
+                        {labelOf(item)}
                       </DropdownMenuItem>
                     )
                   })}
@@ -433,7 +443,7 @@ function AppShell({ children }: { children: ReactNode }) {
   const location = useLocation()
   const fullBleed = FULL_BLEED_ROUTES.has(location.pathname)
   return (
-    <div className={`flex flex-col ${fullBleed ? 'h-dvh overflow-hidden' : 'min-h-screen'} ${isMacDesktop ? 'desktop-backdrop' : 'bg-background'}`}>
+    <div className={`flex flex-col md:pl-60 ${fullBleed ? 'h-dvh overflow-hidden' : 'min-h-screen'} ${isMacDesktop ? 'desktop-backdrop' : 'bg-background'}`}>
       {children}
     </div>
   )
@@ -477,6 +487,8 @@ function App() {
                       <Route path="/logs" element={<LogsPage />} />
                       <Route path="/consumo" element={<ConsumoPage />} />
                       <Route path="/premium" element={<PremiumPage />} />
+                      <Route path="/traduccion" element={<TranslatePage />} />
+                      <Route path="/mcp-config" element={<McpPage />} />
                       <Route path="/test" element={<Navigate to="/playground" replace />} />
                       <Route path="/health" element={<Navigate to="/keys" replace />} />
                       <Route path="*" element={<NotFoundPage />} />

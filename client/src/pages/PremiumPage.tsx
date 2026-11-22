@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, Copy, KeyRound, Plus, RefreshCw, Route, Trash2, X } from 'lucide-react'
+import { Activity, Copy, KeyRound, Pencil, Plus, RefreshCw, Route, Trash2, X } from 'lucide-react'
 import { apiFetch } from '@/lib/api'
 import { PageHeader } from '@/components/page-header'
 import { Button } from '@/components/ui/button'
@@ -19,6 +19,7 @@ interface ServiceApi {
   notes: string | null
   activatedAt: string | null
   enabled: boolean
+  updatedAt?: string
 }
 
 interface Chain {
@@ -72,9 +73,37 @@ interface UsageResponse {
   items: UsageItem[]
 }
 
+// Ticks every 30 s so the counter under a blocked API stays honest without
+// refetching anything: the timestamp comes from the row itself.
+function useNow(intervalMs = 30_000) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), intervalMs)
+    return () => clearInterval(id)
+  }, [intervalMs])
+  return now
+}
+
+// SQLite stores UTC without the `Z`; parse it as UTC or the counter drifts by
+// the browser's offset.
+function sinceLabel(iso: string | null | undefined, now: number): string {
+  if (!iso) return ''
+  const parsed = Date.parse(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z')
+  if (Number.isNaN(parsed)) return ''
+  const seconds = Math.max(0, Math.round((now - parsed) / 1000))
+  if (seconds < 60) return `hace ${seconds}s`
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `hace ${minutes} min`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `hace ${hours} h`
+  return `hace ${Math.round(hours / 24)} d`
+}
+
 export default function PremiumPage() {
   const queryClient = useQueryClient()
+  const now = useNow()
   const [apiName, setApiName] = useState('')
+  const [editing, setEditing] = useState<{ id: number; value: string } | null>(null)
   const [newKey, setNewKey] = useState<{ name: string; key: string } | null>(null)
   const [dragOver, setDragOver] = useState<number | null>(null)
   const [newChainName, setNewChainName] = useState('')
@@ -167,7 +196,7 @@ export default function PremiumPage() {
   })
 
   const patchApi = useMutation({
-    mutationFn: (input: { id: number; chainIds?: number[]; enabled?: boolean; subscriber?: string; notes?: string }) => {
+    mutationFn: (input: { id: number; name?: string; chainIds?: number[]; enabled?: boolean; subscriber?: string; notes?: string }) => {
       const { id, ...body } = input
       return apiFetch(`/api/client-profiles/${id}`, { method: 'PATCH', body: JSON.stringify(body) })
     },
@@ -306,9 +335,50 @@ export default function PremiumPage() {
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <KeyRound className="size-4 text-muted-foreground" />
-                    <button type="button" className="font-medium hover:underline" onClick={() => setSelected(api.id)}>
-                      {api.name}
-                    </button>
+                    {editing?.id === api.id ? (
+                      <span className="flex items-center gap-1">
+                        <Input
+                          autoFocus
+                          value={editing.value}
+                          onChange={event => setEditing({ id: api.id, value: event.target.value })}
+                          onKeyDown={event => {
+                            if (event.key === 'Enter' && editing.value.trim()) {
+                              patchApi.mutate({ id: api.id, name: editing.value.trim() })
+                              setEditing(null)
+                            }
+                            if (event.key === 'Escape') setEditing(null)
+                          }}
+                          className="h-7 w-48 text-[13px]"
+                          aria-label="Nuevo nombre"
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-[12px]"
+                          onClick={() => {
+                            if (editing.value.trim()) patchApi.mutate({ id: api.id, name: editing.value.trim() })
+                            setEditing(null)
+                          }}
+                        >
+                          OK
+                        </Button>
+                      </span>
+                    ) : (
+                      <>
+                        <button type="button" className="font-medium hover:underline" onClick={() => setSelected(api.id)}>
+                          {api.name}
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Renombrar ${api.name}`}
+                          title="Renombrar"
+                          className="rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                          onClick={() => setEditing({ id: api.id, value: api.name })}
+                        >
+                          <Pencil className="size-3.5" />
+                        </button>
+                      </>
+                    )}
                     <code className="rounded bg-muted/40 px-1.5 py-0.5 text-[11px] text-muted-foreground">{api.maskedKey}</code>
                     {api.chainIds.length === 0 ? (
                       <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-300">
@@ -329,8 +399,11 @@ export default function PremiumPage() {
                         </span>
                       ))
                     )}
-                    <span className={`ml-auto text-[11px] ${api.enabled ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    <span className={`ml-auto text-right text-[11px] ${api.enabled ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {api.enabled ? 'activa' : 'bloqueada'}
+                      {api.updatedAt ? (
+                        <span className="block text-[10px] text-muted-foreground">{sinceLabel(api.updatedAt, now)}</span>
+                      ) : null}
                     </span>
                   </div>
 
